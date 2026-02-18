@@ -2,9 +2,34 @@
 set -euo pipefail
 
 # Read NDJSON from stdin, batch, and send to RF Telemetry API
-# Usage: ./scripts/generate_simulated_observations.sh | SENDER_TOKEN=xxx SENDER_ID=yyy ./scripts/radio_sender.sh
+# Usage: ./scripts/generate_simulated_observations.sh | SENDER_TOKEN=xxx SENDER_ID=yyy ./scripts/radio_sender.sh [-H host]
+
+# Parse command-line options
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -H|--host)
+      API_URL="$2"
+      shift 2
+      ;;
+    --freq)
+      FREQ="$2"
+      shift 2
+      ;;
+    --protocol)
+      PROTOCOL="$2"
+      shift 2
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      echo "Usage: radio_sender.sh [-H|--host URL] [--freq FREQ] [--protocol PROTOCOL]" >&2
+      exit 1
+      ;;
+  esac
+done
 
 API_URL="${API_URL:-http://localhost:4000}"
+FREQ="${FREQ:-}"
+PROTOCOL="${PROTOCOL:-}"
 SENDER_TOKEN="${SENDER_TOKEN:?SENDER_TOKEN is required}"
 SENDER_ID="${SENDER_ID:-sender-1}"
 BATCH_SIZE="${SENDER_BATCH_SIZE:-50}"
