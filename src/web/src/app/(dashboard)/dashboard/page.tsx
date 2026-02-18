@@ -9,8 +9,10 @@ import {
   ClassificationTimeline,
   ProtocolBreakdown,
   RSSIDistribution,
+  SNRDistribution,
+  NoiseFloorTimeline,
 } from "@/components/charts";
-import { Activity, AlertTriangle, Radio, BarChart3, PieChart, Shield, Signal } from "lucide-react";
+import { Activity, AlertTriangle, Radio, BarChart3, PieChart, Shield, Signal, Waves } from "lucide-react";
 
 export default function DashboardPage() {
   return (
@@ -131,6 +133,39 @@ export default function DashboardPage() {
               </div>
             </CardContent>
           </Card>
+
+          <Card className="flex flex-1 flex-col">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-sm">
+                <Signal className="h-4 w-4 text-primary" />
+                SNR Quality Distribution
+                <span className="text-xs font-normal text-muted-foreground">(dB)</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="flex flex-1 flex-col">
+              <div className="min-h-44 flex-1">
+                <SNRDistribution />
+              </div>
+              <div className="mt-3 flex items-center gap-4 text-xs">
+                <div className="flex items-center gap-1.5">
+                  <span className="inline-block h-2.5 w-2.5 rounded-sm bg-accent" />
+                  <span className="text-muted-foreground">Excellent</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="inline-block h-2.5 w-2.5 rounded-sm bg-primary" />
+                  <span className="text-muted-foreground">Good</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="inline-block h-2.5 w-2.5 rounded-sm bg-warning" />
+                  <span className="text-muted-foreground">Fair</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="inline-block h-2.5 w-2.5 rounded-sm bg-destructive" />
+                  <span className="text-muted-foreground">Poor</span>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
         </div>
 
         <Card>
@@ -145,6 +180,36 @@ export default function DashboardPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Noise floor timeline - full width */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <Waves className="h-4 w-4 text-purple-400" />
+            Noise Floor
+            <span className="text-xs font-normal text-muted-foreground">(dBm, last 60 min)</span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="h-48">
+            <NoiseFloorTimeline />
+          </div>
+          <div className="mt-3 flex items-center gap-4 text-xs">
+            <div className="flex items-center gap-1.5">
+              <span className="inline-block h-2.5 w-2.5 rounded-sm bg-purple-500" />
+              <span className="text-muted-foreground">Avg Noise</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="inline-block h-px w-4 border-t border-dashed border-purple-500/50" />
+              <span className="text-muted-foreground">Min</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="inline-block h-2.5 w-2.5 rounded-sm bg-purple-500/20" />
+              <span className="text-muted-foreground">Range</span>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Signal feed - full width */}
       <Card>

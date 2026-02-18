@@ -38,6 +38,63 @@ describe("observationSchema", () => {
     });
     expect(result.success).toBe(true);
   });
+
+  it("accepts snr, noise, and modulation fields", () => {
+    const result = observationSchema.safeParse({
+      observedAt: "2025-01-01T00:00:00.000Z",
+      protocol: "temperature",
+      fields: { device_id: "abc" },
+      snr: 18.5,
+      noise: -92.1,
+      modulation: "ASK",
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.snr).toBe(18.5);
+      expect(result.data.noise).toBe(-92.1);
+      expect(result.data.modulation).toBe("ASK");
+    }
+  });
+
+  it("rejects non-numeric snr", () => {
+    const result = observationSchema.safeParse({
+      observedAt: "2025-01-01T00:00:00.000Z",
+      protocol: "temperature",
+      fields: {},
+      snr: "high",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects non-numeric noise", () => {
+    const result = observationSchema.safeParse({
+      observedAt: "2025-01-01T00:00:00.000Z",
+      protocol: "temperature",
+      fields: {},
+      noise: "low",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects modulation exceeding 20 characters", () => {
+    const result = observationSchema.safeParse({
+      observedAt: "2025-01-01T00:00:00.000Z",
+      protocol: "temperature",
+      fields: {},
+      modulation: "A".repeat(21),
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts modulation at exactly 20 characters", () => {
+    const result = observationSchema.safeParse({
+      observedAt: "2025-01-01T00:00:00.000Z",
+      protocol: "temperature",
+      fields: {},
+      modulation: "A".repeat(20),
+    });
+    expect(result.success).toBe(true);
+  });
 });
 
 describe("observationBatchSchema", () => {

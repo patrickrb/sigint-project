@@ -18,6 +18,7 @@ KNOWN_DEVICES=(
 
 PROTOCOLS=("temperature" "humidity" "door_sensor" "motion" "weather_station")
 FREQUENCIES=(433920000 315000000 868000000 915000000 433920000)
+MODULATIONS=("ASK" "FSK" "OOK")
 
 generate_known() {
   local idx=$((RANDOM % ${#KNOWN_DEVICES[@]}))
@@ -25,6 +26,9 @@ generate_known() {
   local protocol="${PROTOCOLS[$idx]}"
   local freq="${FREQUENCIES[$idx]}"
   local rssi=$(( -(RANDOM % 60 + 30) ))
+  local snr=$(( RANDOM % 26 + 5 ))
+  local noise=$(( -(RANDOM % 21 + 80) ))
+  local modulation="${MODULATIONS[$((RANDOM % ${#MODULATIONS[@]}))]}"
 
   # Parse device fields
   local device_id
@@ -45,6 +49,9 @@ generate_known() {
     --arg protocol "$protocol" \
     --argjson freq "$freq" \
     --argjson rssi "$rssi" \
+    --argjson snr "$snr" \
+    --argjson noise "$noise" \
+    --arg modulation "$modulation" \
     --arg device_id "$device_id" \
     --argjson channel "$channel" \
     --arg value "$value" \
@@ -54,6 +61,9 @@ generate_known() {
       protocol: $protocol,
       frequencyHz: $freq,
       rssi: $rssi,
+      snr: $snr,
+      noise: $noise,
+      modulation: $modulation,
       fields: {
         device_id: $device_id,
         channel: $channel,
@@ -66,12 +76,18 @@ generate_unknown() {
   local protocol="${PROTOCOLS[$((RANDOM % ${#PROTOCOLS[@]}))]}"
   local freq="${FREQUENCIES[$((RANDOM % ${#FREQUENCIES[@]}))]}"
   local rssi=$(( -(RANDOM % 60 + 30) ))
+  local snr=$(( RANDOM % 26 + 5 ))
+  local noise=$(( -(RANDOM % 21 + 80) ))
+  local modulation="${MODULATIONS[$((RANDOM % ${#MODULATIONS[@]}))]}"
   local rnd_id="unknown-$(printf '%04x' $((RANDOM % 65536)))"
 
   jq -cn \
     --arg protocol "$protocol" \
     --argjson freq "$freq" \
     --argjson rssi "$rssi" \
+    --argjson snr "$snr" \
+    --argjson noise "$noise" \
+    --arg modulation "$modulation" \
     --arg device_id "$rnd_id" \
     --arg ts "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
     '{
@@ -79,6 +95,9 @@ generate_unknown() {
       protocol: $protocol,
       frequencyHz: $freq,
       rssi: $rssi,
+      snr: $snr,
+      noise: $noise,
+      modulation: $modulation,
       fields: {
         device_id: $device_id,
         channel: 0,

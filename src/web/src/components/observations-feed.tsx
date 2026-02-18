@@ -18,6 +18,9 @@ interface Observation {
   protocol: string;
   frequencyHz: string | null;
   rssi: number | null;
+  snr: number | null;
+  noise: number | null;
+  modulation: string | null;
   signature: string;
   classification: string;
   observedAt: string;
@@ -53,6 +56,22 @@ function formatFieldValue(key: string, value: unknown): string {
 }
 
 const HIDDEN_FIELDS = new Set(["model", "time", "mic"]);
+
+function snrQualityColor(snr: number | null): string | null {
+  if (snr == null) return null;
+  if (snr >= 20) return "bg-emerald-400";
+  if (snr >= 10) return "bg-blue-400";
+  if (snr >= 5) return "bg-amber-400";
+  return "bg-red-400";
+}
+
+function snrQualityLabel(snr: number | null): string {
+  if (snr == null) return "";
+  if (snr >= 20) return "Excellent";
+  if (snr >= 10) return "Good";
+  if (snr >= 5) return "Fair";
+  return "Poor";
+}
 
 export function ObservationsFeed({ compact = false }: { compact?: boolean }) {
   const { data: session } = useSession();
@@ -262,6 +281,12 @@ export function ObservationsFeed({ compact = false }: { compact?: boolean }) {
                     <span className="font-mono text-xs tabular-nums text-muted-foreground">
                       {obs.rssi != null ? `${obs.rssi}` : "\u2014"}
                     </span>
+                    {snrQualityColor(obs.snr) && (
+                      <span
+                        className={`inline-block h-1.5 w-1.5 rounded-full ${snrQualityColor(obs.snr)}`}
+                        title={`SNR: ${obs.snr} dB (${snrQualityLabel(obs.snr)})`}
+                      />
+                    )}
                   </div>
 
                   {/* Frequency */}
@@ -302,6 +327,30 @@ export function ObservationsFeed({ compact = false }: { compact?: boolean }) {
                           </div>
                         ))}
                     </div>
+                    {(obs.snr != null || obs.noise != null || obs.modulation) && (
+                      <div className="mt-2 flex items-center gap-4 text-xs">
+                        {obs.snr != null && (
+                          <div className="flex items-center gap-1.5">
+                            <span className={`inline-block h-2 w-2 rounded-full ${snrQualityColor(obs.snr)}`} />
+                            <span className="text-muted-foreground">SNR:</span>
+                            <span className="font-mono font-medium">{obs.snr} dB</span>
+                            <span className="text-muted-foreground">({snrQualityLabel(obs.snr)})</span>
+                          </div>
+                        )}
+                        {obs.noise != null && (
+                          <div className="flex items-baseline gap-1.5">
+                            <span className="text-muted-foreground">Noise:</span>
+                            <span className="font-mono font-medium">{obs.noise} dBm</span>
+                          </div>
+                        )}
+                        {obs.modulation && (
+                          <div className="flex items-baseline gap-1.5">
+                            <span className="text-muted-foreground">Modulation:</span>
+                            <span className="font-mono font-medium">{obs.modulation}</span>
+                          </div>
+                        )}
+                      </div>
+                    )}
                     <div className="mt-2 flex items-center gap-4 text-xs text-muted-foreground">
                       {obs.sender?.name && (
                         <span>Sender: <span className="font-medium text-foreground">{obs.sender.name}</span></span>

@@ -57,6 +57,9 @@ model Observation {
   protocol       String
   frequencyHz    BigInt?
   rssi           Float?
+  snr            Float?
+  noise          Float?
+  modulation     String?
   signature      String
   fields         Json
   raw            String?

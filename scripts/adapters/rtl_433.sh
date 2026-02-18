@@ -5,14 +5,19 @@ set -euo pipefail
 # Launches rtl_433, normalizes JSON output → observation NDJSON on stdout
 #
 # Env vars:
-#   RTL_433_FREQ       - Frequency (e.g. 315M, 433.92M). Default: rtl_433 default
+#   RTL_433_FREQ       - Single frequency (e.g. 315M, 433.92M). Default: rtl_433 default
+#   RTL_433_FREQS      - Comma-separated frequencies for hopping (e.g. "433.92M,315M")
 #   RTL_433_DEVICE     - Device index or serial. Default: rtl_433 default
 #   RTL_433_GAIN       - Gain setting. Default: rtl_433 default
 #   RTL_433_PROTOCOLS  - Protocol filter: "tpms" or empty for all. Default: all
+#   RTL_433_NOISE_WIN  - Noise floor measurement window in seconds. Default: 60 (30 when hopping)
 #   RTL_433_EXTRA_ARGS - Extra args passed to rtl_433
 #   RTL_433_STDIN      - If "true", read rtl_433-format JSON from stdin (testing)
 
 log() { echo "[rtl_433_adapter] $*" >&2; }
+
+# Source shared normalization library
+. "$(dirname "$0")/../lib/normalize.sh"
 
 # --- Dependency checks ---
 check_deps() {
@@ -37,178 +42,43 @@ check_deps() {
   fi
 }
 
-# --- SHA-256 helper ---
-compute_sha256() {
-  echo -n "$1" | $SHA_CMD | cut -d' ' -f1
-}
+# --- Build rtl_433 command ---
+build_rtl_433_cmd() {
+  local hopping=false
 
-# --- TPMS model detection ---
-is_tpms() {
-  local model="$1" type="$2"
-  # Explicit type field from rtl_433
-  if [[ "$type" == "TPMS" ]]; then
-    return 0
-  fi
-  # Known TPMS decoder model prefixes
-  case "$model" in
-    Schrader*|Toyota*|Citroen*|PMV-107J*|Ford*|Renault*|Hyundai*|Jansite*|Abarth*|Essex*) return 0 ;;
-  esac
-  return 1
-}
-
-# --- Normalize one rtl_433 JSON line → observation NDJSON ---
-normalize_line() {
-  local line="$1"
-
-  # Extract key fields with jq (single pass)
-  local extracted
-  extracted=$(echo "$line" | jq -c '{
-    time:           (.time // null),
-    model:          (.model // null),
-    type:           (.type // null),
-    id:             (.id // null),
-    pressure_kPa:   (.pressure_kPa // null),
-    temperature_C:  (.temperature_C // null),
-    flags:          (.flags // null),
-    freq:           (.freq // null),
-    rssi:           (.rssi // null)
-  }' 2>/dev/null) || return 1
-
-  local model type id time freq rssi pressure_kPa temperature_C flags
-  model=$(echo "$extracted" | jq -r '.model // empty')
-  type=$(echo "$extracted" | jq -r '.type // empty')
-  id=$(echo "$extracted" | jq -r '.id // empty')
-  time=$(echo "$extracted" | jq -r '.time // empty')
-  freq=$(echo "$extracted" | jq -r '.freq // empty')
-  rssi=$(echo "$extracted" | jq -r '.rssi // empty')
-  pressure_kPa=$(echo "$extracted" | jq -r '.pressure_kPa // empty')
-  temperature_C=$(echo "$extracted" | jq -r '.temperature_C // empty')
-  flags=$(echo "$extracted" | jq -r '.flags // empty')
-
-  # Skip lines without a model
-  [[ -z "$model" ]] && return 0
-
-  # Determine protocol
-  local protocol
-  if is_tpms "$model" "$type"; then
-    protocol="tpms"
-  else
-    # Normalize model name as protocol
-    protocol=$(echo "$model" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
+  # Multi-frequency hopping takes priority over single frequency
+  if [[ -n "${RTL_433_FREQS:-}" && -n "${RTL_433_FREQ:-}" ]]; then
+    log "WARNING: Both RTL_433_FREQS and RTL_433_FREQ are set; ignoring RTL_433_FREQ in favor of RTL_433_FREQS"
   fi
 
-  # Convert observedAt to ISO 8601 (rtl_433 uses "YYYY-MM-DD HH:MM:SS" in UTC with -M time:utc)
-  local observed_at
-  if [[ -n "$time" ]]; then
-    observed_at="${time/ /T}Z"
-  else
-    observed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  local freq_args=()
+  if [[ -n "${RTL_433_FREQS:-}" ]]; then
+    local freq_count=0
+    IFS=',' read -ra freqs <<< "$RTL_433_FREQS"
+    for f in "${freqs[@]}"; do
+      f=$(echo "$f" | tr -d ' ')
+      [[ -n "$f" ]] && freq_args+=(-f "$f") && freq_count=$((freq_count + 1))
+    done
+    if (( freq_count > 1 )); then
+      freq_args+=(-H 30)
+      hopping=true
+    fi
+  elif [[ -n "${RTL_433_FREQ:-}" ]]; then
+    freq_args+=(-f "$RTL_433_FREQ")
   fi
 
-  # Convert frequency MHz → Hz integer
-  local freq_hz=""
-  if [[ -n "$freq" && "$freq" != "null" ]]; then
-    freq_hz=$(awk "BEGIN {printf \"%.0f\", $freq * 1000000}")
-  fi
-
-  # Build signature: only stable fields (id, model) sorted lexicographically
-  local sig_parts=""
-  # Sort: id before model alphabetically
-  if [[ -n "$id" ]]; then
-    sig_parts="id=${id}"
-  fi
-  if [[ -n "$model" ]]; then
-    [[ -n "$sig_parts" ]] && sig_parts="${sig_parts}&"
-    sig_parts="${sig_parts}model=${model}"
-  fi
-  local sig_input="rf-telemetry-v1:${protocol}:${sig_parts}"
-  local signature
-  signature=$(compute_sha256 "$sig_input")
-
-  # Build fields object
-  local fields_json
-  if is_tpms "$model" "$type"; then
-    # TPMS: curated fields
-    fields_json=$(jq -cn \
-      --arg model "$model" \
-      --arg id "$id" \
-      --arg pressure_kPa "$pressure_kPa" \
-      --arg temperature_C "$temperature_C" \
-      --arg flags "$flags" \
-      '{model: $model} +
-       (if $id != "" then {id: $id} else {} end) +
-       (if $pressure_kPa != "" then {pressure_kPa: ($pressure_kPa | tonumber)} else {} end) +
-       (if $temperature_C != "" then {temperature_C: ($temperature_C | tonumber)} else {} end) +
-       (if $flags != "" then {flags: $flags} else {} end)')
-  else
-    # Non-TPMS: pass through all data fields (drop metadata: time, freq, rssi, snr, noise, mod, mic)
-    fields_json=$(echo "$line" | jq -c 'del(.time, .freq, .rssi, .snr, .noise, .mod, .mic)')
-  fi
-
-  # Build observation JSON
-  local obs_args=(
-    --arg observedAt "$observed_at"
-    --arg protocol "$protocol"
-    --arg signature "$signature"
-    --argjson fields "$fields_json"
-    --arg raw "$line"
-  )
-
-  # Optional numeric fields
-  local obs_template='{
-    observedAt: $observedAt,
-    protocol:   $protocol,
-    signature:  $signature,
-    fields:     $fields,
-    raw:        $raw
-  }'
-
-  if [[ -n "$freq_hz" ]]; then
-    obs_args+=(--argjson frequencyHz "$freq_hz")
-    obs_template='{
-      observedAt:  $observedAt,
-      protocol:    $protocol,
-      frequencyHz: $frequencyHz,
-      signature:   $signature,
-      fields:      $fields,
-      raw:         $raw
-    }'
-  fi
-
-  if [[ -n "$rssi" && "$rssi" != "null" ]]; then
-    obs_args+=(--argjson rssi "$rssi")
-    if [[ -n "$freq_hz" ]]; then
-      obs_template='{
-        observedAt:  $observedAt,
-        protocol:    $protocol,
-        frequencyHz: $frequencyHz,
-        rssi:        $rssi,
-        signature:   $signature,
-        fields:      $fields,
-        raw:         $raw
-      }'
+  # Noise window: use explicit setting, or 30s when hopping (matches hop interval), 60s otherwise
+  local noise_win="${RTL_433_NOISE_WIN:-}"
+  if [[ -z "$noise_win" ]]; then
+    if [[ "$hopping" == "true" ]]; then
+      noise_win=30
     else
-      obs_template='{
-        observedAt: $observedAt,
-        protocol:   $protocol,
-        rssi:       $rssi,
-        signature:  $signature,
-        fields:     $fields,
-        raw:        $raw
-      }'
+      noise_win=60
     fi
   fi
 
-  jq -cn "${obs_args[@]}" "$obs_template"
-}
-
-# --- Build rtl_433 command ---
-build_rtl_433_cmd() {
-  local cmd=(rtl_433 -F json -M time:utc -M level)
-
-  if [[ -n "${RTL_433_FREQ:-}" ]]; then
-    cmd+=(-f "$RTL_433_FREQ")
-  fi
+  local cmd=(rtl_433 -F json -M time:utc -M level -M protocol -M "noise:${noise_win}")
+  cmd+=("${freq_args[@]}")
 
   if [[ -n "${RTL_433_DEVICE:-}" ]]; then
     cmd+=(-d "$RTL_433_DEVICE")
