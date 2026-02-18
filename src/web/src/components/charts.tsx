@@ -15,7 +15,7 @@ import {
   YAxis,
   Tooltip,
   ResponsiveContainer,
-  Legend,
+
 } from "recharts";
 
 const CHART_COLORS = {

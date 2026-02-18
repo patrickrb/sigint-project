@@ -186,7 +186,8 @@ router.get("/api/observations/snr-distribution", authenticateUser, async (req: R
 // Noise floor timeline: average/min/max noise per minute
 router.get("/api/observations/noise-timeline", authenticateUser, async (req: Request, res: Response) => {
   try {
-    const minutes = Math.min(parseInt(req.query.minutes as string) || 60, 1440);
+    const parsedMinutes = parseInt(req.query.minutes as string, 10);
+    const minutes = Math.min(Number.isNaN(parsedMinutes) ? 60 : parsedMinutes, 1440);
     const since = new Date(Date.now() - minutes * 60 * 1000);
 
     const rows = await prisma.$queryRaw<Array<{ bucket: Date; avg_noise: number; min_noise: number; max_noise: number }>>`

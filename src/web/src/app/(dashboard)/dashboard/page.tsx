@@ -200,7 +200,7 @@ export default function DashboardPage() {
               <span className="text-muted-foreground">Avg Noise</span>
             </div>
             <div className="flex items-center gap-1.5">
-              <span className="inline-block h-0.5 w-4 rounded-sm bg-purple-500 opacity-50" style={{ borderTop: "1px dashed" }} />
+              <span className="inline-block h-px w-4 border-t border-dashed border-purple-500/50" />
               <span className="text-muted-foreground">Min</span>
             </div>
             <div className="flex items-center gap-1.5">
