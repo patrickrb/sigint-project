@@ -1,9 +1,17 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { useSession } from "next-auth/react";
 import { Badge } from "@/components/ui/badge";
-import { formatDate, formatFrequency, truncateSignature } from "@/lib/utils";
+import { SignalBar } from "@/components/ui/signal-bar";
+import {
+  formatDate,
+  formatFrequency,
+  truncateSignature,
+  rssiToLevel,
+  timeAgo,
+  protocolColor,
+} from "@/lib/utils";
 
 interface Observation {
   id: string;
@@ -22,7 +30,34 @@ export function ObservationsFeed() {
   const { data: session } = useSession();
   const [observations, setObservations] = useState<Observation[]>([]);
   const [connected, setConnected] = useState(false);
+  const [newIds, setNewIds] = useState<Set<string>>(new Set());
+  const [lastSignalTime, setLastSignalTime] = useState<string | null>(null);
+  const [, setTick] = useState(0);
   const eventSourceRef = useRef<EventSource | null>(null);
+
+  // Tick every second to update "last signal" display
+  useEffect(() => {
+    const timer = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const handleNewObservation = useCallback((obs: Observation) => {
+    setObservations((prev) => [obs, ...prev].slice(0, 100));
+    setLastSignalTime(obs.receivedAt);
+    setNewIds((prev) => {
+      const next = new Set(prev);
+      next.add(obs.id);
+      return next;
+    });
+    // Clear flash after animation completes
+    setTimeout(() => {
+      setNewIds((prev) => {
+        const next = new Set(prev);
+        next.delete(obs.id);
+        return next;
+      });
+    }, 1500);
+  }, []);
 
   useEffect(() => {
     if (!session) return;
@@ -36,7 +71,11 @@ export function ObservationsFeed() {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then((r) => r.json())
-      .then((data) => setObservations(data.observations || data))
+      .then((data) => {
+        const obs = data.observations || data;
+        setObservations(obs);
+        if (obs.length > 0) setLastSignalTime(obs[0].receivedAt);
+      })
       .catch(() => {});
 
     // Connect to SSE
@@ -49,7 +88,7 @@ export function ObservationsFeed() {
     es.addEventListener("observation", (e) => {
       try {
         const obs = JSON.parse(e.data);
-        setObservations((prev) => [obs, ...prev].slice(0, 100));
+        handleNewObservation(obs);
       } catch {}
     });
 
@@ -57,7 +96,7 @@ export function ObservationsFeed() {
       es.close();
       eventSourceRef.current = null;
     };
-  }, [session]);
+  }, [session, handleNewObservation]);
 
   const classificationBadge = (c: string) => {
     switch (c) {
@@ -72,12 +111,28 @@ export function ObservationsFeed() {
 
   return (
     <div>
-      <div className="mb-3 flex items-center gap-2">
-        <h2 className="text-lg font-semibold">Recent Observations</h2>
-        <span
-          className={`inline-block h-2 w-2 rounded-full ${connected ? "bg-accent" : "bg-destructive"}`}
-          title={connected ? "Connected" : "Disconnected"}
-        />
+      <div className="mb-3 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <h2 className="text-lg font-semibold">Recent Observations</h2>
+          <div className="flex items-center gap-1.5">
+            {connected ? (
+              <Badge variant="live" className="gap-1">
+                <span className="inline-block h-1.5 w-1.5 rounded-full bg-accent animate-pulse-dot" />
+                LIVE
+              </Badge>
+            ) : (
+              <Badge variant="destructive" className="gap-1">
+                <span className="inline-block h-1.5 w-1.5 rounded-full bg-destructive" />
+                DISCONNECTED
+              </Badge>
+            )}
+          </div>
+        </div>
+        {lastSignalTime && (
+          <span className="text-xs tabular-nums text-muted-foreground">
+            Last signal {timeAgo(lastSignalTime)}
+          </span>
+        )}
       </div>
       <div className="overflow-x-auto rounded-lg border border-border">
         <table className="w-full text-sm">
@@ -86,7 +141,7 @@ export function ObservationsFeed() {
               <th className="px-4 py-3 text-left font-medium text-muted-foreground">Time</th>
               <th className="px-4 py-3 text-left font-medium text-muted-foreground">Protocol</th>
               <th className="px-4 py-3 text-left font-medium text-muted-foreground">Frequency</th>
-              <th className="px-4 py-3 text-left font-medium text-muted-foreground">RSSI</th>
+              <th className="px-4 py-3 text-left font-medium text-muted-foreground">Signal</th>
               <th className="px-4 py-3 text-left font-medium text-muted-foreground">Signature</th>
               <th className="px-4 py-3 text-left font-medium text-muted-foreground">Status</th>
             </tr>
@@ -100,17 +155,37 @@ export function ObservationsFeed() {
               </tr>
             ) : (
               observations.map((obs) => (
-                <tr key={obs.id} className="border-b border-border/50 hover:bg-muted/30">
-                  <td className="px-4 py-2 tabular-nums">{formatDate(obs.receivedAt)}</td>
-                  <td className="px-4 py-2">
-                    <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{obs.protocol}</code>
+                <tr
+                  key={obs.id}
+                  className={`border-b border-border/50 hover:bg-muted/30 ${
+                    newIds.has(obs.id) ? "animate-row-flash" : ""
+                  }`}
+                >
+                  <td className="px-4 py-2 font-mono text-xs tabular-nums">
+                    {formatDate(obs.receivedAt)}
                   </td>
-                  <td className="px-4 py-2 tabular-nums">
+                  <td className="px-4 py-2">
+                    <span
+                      className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${protocolColor(obs.protocol)}`}
+                    >
+                      {obs.protocol}
+                    </span>
+                  </td>
+                  <td className="px-4 py-2 font-mono text-xs tabular-nums">
                     {formatFrequency(obs.frequencyHz ? Number(obs.frequencyHz) : null)}
                   </td>
-                  <td className="px-4 py-2 tabular-nums">{obs.rssi != null ? `${obs.rssi} dBm` : "—"}</td>
                   <td className="px-4 py-2">
-                    <code className="text-xs text-muted-foreground">{truncateSignature(obs.signature)}</code>
+                    <div className="flex items-center gap-2">
+                      <SignalBar level={rssiToLevel(obs.rssi)} />
+                      <span className="font-mono text-xs text-muted-foreground tabular-nums">
+                        {obs.rssi != null ? `${obs.rssi}` : "—"}
+                      </span>
+                    </div>
+                  </td>
+                  <td className="px-4 py-2">
+                    <code className="font-mono text-xs text-muted-foreground">
+                      {truncateSignature(obs.signature)}
+                    </code>
                   </td>
                   <td className="px-4 py-2">{classificationBadge(obs.classification)}</td>
                 </tr>

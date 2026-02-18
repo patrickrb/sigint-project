@@ -6,6 +6,7 @@ const variants: Record<string, string> = {
   warning: "bg-warning/10 text-warning border-warning/20",
   destructive: "bg-destructive/10 text-destructive border-destructive/20",
   muted: "bg-muted text-muted-foreground border-border",
+  live: "bg-accent/15 text-accent border-accent/30 animate-glow-green",
 };
 
 export function Badge({

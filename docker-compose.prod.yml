@@ -18,7 +18,7 @@ services:
   api:
     build:
       context: .
-      dockerfile: Dockerfile.dev
+      dockerfile: Dockerfile.api
     ports:
       - "4000:4000"
     environment:
@@ -28,13 +28,6 @@ services:
       JWT_SECRET: "${JWT_SECRET:-dev-jwt-secret}"
       TOKEN_ENCRYPTION_KEY: "${TOKEN_ENCRYPTION_KEY:-}"
       CORS_ORIGIN: "http://localhost:3000"
-    volumes:
-      - ./src/shared/src:/app/src/shared/src
-      - ./src/shared/prisma:/app/src/shared/prisma
-      - ./src/api/src:/app/src/api/src
-      - ./src/api/tsconfig.json:/app/src/api/tsconfig.json
-      - ./tsconfig.base.json:/app/tsconfig.base.json
-    command: sh -c "npx prisma db push --schema=src/shared/prisma/schema.prisma --skip-generate && npx tsc --project src/shared/tsconfig.json && npx tsx watch src/api/src/index.ts"
     depends_on:
       postgres:
         condition: service_healthy
@@ -43,23 +36,16 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 15s
+      start_period: 10s
 
   worker:
     build:
       context: .
-      dockerfile: Dockerfile.dev
+      dockerfile: Dockerfile.worker
     environment:
       DATABASE_URL: "postgresql://sigint:sigint@postgres:5432/sigint?schema=public"
       WORKER_POLL_INTERVAL_MS: "2000"
       RETENTION_DAYS: "7"
-    volumes:
-      - ./src/shared/src:/app/src/shared/src
-      - ./src/shared/prisma:/app/src/shared/prisma
-      - ./services/data-processor-worker/src:/app/services/data-processor-worker/src
-      - ./services/data-processor-worker/tsconfig.json:/app/services/data-processor-worker/tsconfig.json
-      - ./tsconfig.base.json:/app/tsconfig.base.json
-    command: sh -c "npx tsc --project src/shared/tsconfig.json && npx tsx watch services/data-processor-worker/src/index.ts"
     depends_on:
       postgres:
         condition: service_healthy
@@ -67,7 +53,7 @@ services:
   web:
     build:
       context: .
-      dockerfile: Dockerfile.dev
+      dockerfile: Dockerfile.web
     ports:
       - "3000:3000"
     environment:
@@ -76,16 +62,6 @@ services:
       NEXTAUTH_URL: "http://localhost:3000"
       NEXTAUTH_SECRET: "${NEXTAUTH_SECRET:-dev-nextauth-secret}"
       AUTH_TRUST_HOST: "true"
-    volumes:
-      - ./src/shared/src:/app/src/shared/src
-      - ./src/shared/prisma:/app/src/shared/prisma
-      - ./src/web/src:/app/src/web/src
-      - ./src/web/public:/app/src/web/public
-      - ./src/web/next.config.ts:/app/src/web/next.config.ts
-      - ./src/web/tsconfig.json:/app/src/web/tsconfig.json
-      - ./src/web/postcss.config.mjs:/app/src/web/postcss.config.mjs
-      - ./tsconfig.base.json:/app/tsconfig.base.json
-    command: sh -c "npx tsc --project src/shared/tsconfig.json && cd src/web && npx next dev --hostname 0.0.0.0 --port 3000"
     depends_on:
       api:
         condition: service_healthy

@@ -57,13 +57,25 @@ router.post("/api/ingest", authenticateSender, async (req: Request, res: Respons
       data: finalData,
     });
 
-    // Broadcast new observations via SSE
-    sseManager.broadcast("observations", {
-      senderId,
-      senderName: req.sender!.name,
-      count: result.count,
-      protocols: [...new Set(observations.map((o) => o.protocol))],
+    // Query inserted observations with sender info for SSE broadcast
+    const inserted = await prisma.observation.findMany({
+      where: {
+        senderId,
+        receivedAt: { gte: new Date(Date.now() - 5000) },
+        signature: { in: finalData.map((d) => d.signature) },
+      },
+      include: { sender: { select: { name: true } } },
+      orderBy: { receivedAt: "desc" },
+      take: result.count,
     });
+
+    // Broadcast each observation individually for real-time feed
+    for (const obs of inserted) {
+      sseManager.broadcast("observation", {
+        ...obs,
+        frequencyHz: obs.frequencyHz?.toString() ?? null,
+      });
+    }
 
     res.json({ received: result.count });
   } catch (err) {

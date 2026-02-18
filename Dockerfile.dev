@@ -1,0 +1,17 @@
+FROM node:20-alpine
+WORKDIR /app
+
+# Install dependencies only (source will be volume-mounted)
+COPY package.json package-lock.json* ./
+COPY tsconfig.base.json ./
+COPY src/shared/package.json src/shared/
+COPY src/api/package.json src/api/
+COPY src/web/package.json src/web/
+COPY services/data-processor-worker/package.json services/data-processor-worker/
+
+RUN npm install
+
+# Copy shared source + prisma schema, generate client, and build shared
+COPY src/shared/ src/shared/
+RUN npx prisma generate --schema=src/shared/prisma/schema.prisma
+RUN npx tsc --project src/shared/tsconfig.json

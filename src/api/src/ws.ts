@@ -88,13 +88,25 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage, sender: { id: string;
       // Send ACK
       ws.send(JSON.stringify({ ok: true, received: result.count }));
 
-      // Broadcast via SSE
-      sseManager.broadcast("observations", {
-        senderId: sender.id,
-        senderName: sender.name,
-        count: result.count,
-        protocols: [...new Set(observations.map((o) => o.protocol))],
+      // Query inserted observations with sender info for SSE broadcast
+      const inserted = await prisma.observation.findMany({
+        where: {
+          senderId: sender.id,
+          receivedAt: { gte: new Date(Date.now() - 5000) },
+          signature: { in: finalData.map((d) => d.signature) },
+        },
+        include: { sender: { select: { name: true } } },
+        orderBy: { receivedAt: "desc" },
+        take: result.count,
       });
+
+      // Broadcast each observation individually for real-time feed
+      for (const obs of inserted) {
+        sseManager.broadcast("observation", {
+          ...obs,
+          frequencyHz: obs.frequencyHz?.toString() ?? null,
+        });
+      }
 
       // Update sender lastSeenAt
       await prisma.sender.update({

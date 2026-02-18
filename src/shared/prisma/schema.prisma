@@ -28,13 +28,14 @@ enum Role {
 }
 
 model Sender {
-  id         String       @id @default(cuid())
-  name       String
-  tokenHash  String       @unique
-  userId     String
-  lastSeenAt DateTime?
-  status     SenderStatus @default(ACTIVE)
-  meta       Json?
+  id             String       @id @default(cuid())
+  name           String
+  tokenHash      String       @unique
+  encryptedToken String?
+  userId         String
+  lastSeenAt     DateTime?
+  status         SenderStatus @default(ACTIVE)
+  meta           Json?
 
   user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   observations Observation[]
