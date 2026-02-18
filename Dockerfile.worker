@@ -1,0 +1,35 @@
+FROM node:20-alpine AS builder
+WORKDIR /app
+
+COPY package.json package-lock.json* ./
+COPY tsconfig.base.json ./
+COPY src/shared/package.json src/shared/
+COPY services/data-processor-worker/package.json services/data-processor-worker/
+
+RUN npm install
+
+COPY src/shared/ src/shared/
+COPY services/data-processor-worker/ services/data-processor-worker/
+
+RUN npx prisma generate --schema=src/shared/prisma/schema.prisma
+RUN npm run build --workspace=src/shared
+RUN npm run build --workspace=services/data-processor-worker
+
+FROM node:20-alpine AS runner
+WORKDIR /app
+
+COPY package.json package-lock.json* ./
+COPY src/shared/package.json src/shared/
+COPY services/data-processor-worker/package.json services/data-processor-worker/
+
+RUN npm install --omit=dev
+
+COPY --from=builder /app/src/shared/dist src/shared/dist
+COPY --from=builder /app/src/shared/prisma src/shared/prisma
+COPY --from=builder /app/services/data-processor-worker/dist services/data-processor-worker/dist
+
+RUN npx -y prisma@6 generate --schema=src/shared/prisma/schema.prisma
+
+ENV NODE_ENV=production
+
+CMD ["node", "services/data-processor-worker/dist/index.js"]

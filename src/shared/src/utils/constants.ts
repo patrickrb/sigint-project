@@ -1,0 +1,10 @@
+export const RETENTION_DAYS = 7;
+export const BATCH_MAX_SIZE = 500;
+export const BATCH_DEFAULT_SIZE = 50;
+export const SENDER_BATCH_INTERVAL_MS = 2000;
+export const WORKER_POLL_INTERVAL_MS = 2000;
+export const RETENTION_CHECK_INTERVAL_MS = 3600000;
+export const DEFAULT_SIMULATOR_RATE = 2;
+export const MAX_BATCH_SIZE = 500;
+export const JWT_EXPIRY = "24h";
+export const DEVICE_TOKEN_EXPIRY = "30d";

@@ -1,0 +1,20 @@
+{
+  "name": "rf-telemetry",
+  "private": true,
+  "workspaces": [
+    "src/*",
+    "services/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "dev:api": "npm run dev --workspace=src/api",
+    "dev:web": "npm run dev --workspace=src/web",
+    "dev:worker": "npm run dev --workspace=services/data-processor-worker",
+    "db:generate": "npm run db:generate --workspace=src/shared",
+    "db:migrate": "npm run db:migrate --workspace=src/shared",
+    "db:seed": "npm run db:seed --workspace=src/shared",
+    "db:push": "npm run db:push --workspace=src/shared",
+    "test": "npm test --workspaces --if-present",
+    "lint": "eslint . --ext .ts,.tsx"
+  }
+}

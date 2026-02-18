@@ -1,0 +1,135 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String?
+  role         Role     @default(USER)
+  createdAt    DateTime @default(now())
+
+  senders          Sender[]
+  whitelistEntries WhitelistEntry[]
+  rules            Rule[]
+
+  @@map("users")
+}
+
+enum Role {
+  ADMIN
+  USER
+}
+
+model Sender {
+  id         String       @id @default(cuid())
+  name       String
+  tokenHash  String       @unique
+  userId     String
+  lastSeenAt DateTime?
+  status     SenderStatus @default(ACTIVE)
+  meta       Json?
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  observations Observation[]
+  alertEvents  AlertEvent[]
+
+  @@map("senders")
+}
+
+enum SenderStatus {
+  ACTIVE
+  REVOKED
+}
+
+model Observation {
+  id             String         @id @default(cuid())
+  senderId       String
+  observedAt     DateTime
+  receivedAt     DateTime       @default(now())
+  protocol       String
+  frequencyHz    BigInt?
+  rssi           Float?
+  signature      String
+  fields         Json
+  raw            String?
+  classification Classification @default(PENDING)
+
+  sender Sender @relation(fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@index([senderId])
+  @@index([signature])
+  @@index([classification])
+  @@index([receivedAt])
+  @@map("observations")
+}
+
+enum Classification {
+  KNOWN
+  UNKNOWN
+  PENDING
+}
+
+model WhitelistEntry {
+  id        String   @id @default(cuid())
+  userId    String
+  signature String   @unique
+  label     String
+  protocol  String?
+  notes     String?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("whitelist_entries")
+}
+
+model Rule {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  type      RuleType
+  config    Json
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  alertEvents AlertEvent[]
+
+  @@map("rules")
+}
+
+enum RuleType {
+  UNKNOWN_BURST
+  NEW_DEVICE
+  CUSTOM
+}
+
+model AlertEvent {
+  id             String    @id @default(cuid())
+  ruleId         String
+  senderId       String?
+  severity       Severity  @default(INFO)
+  message        String
+  meta           Json?
+  acknowledgedAt DateTime?
+  createdAt      DateTime  @default(now())
+
+  rule   Rule    @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  sender Sender? @relation(fields: [senderId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@map("alert_events")
+}
+
+enum Severity {
+  INFO
+  WARNING
+  CRITICAL
+}
