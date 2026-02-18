@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# RF Collector — launches a radio adapter and pipes output to radio_sender.sh
+#
+# Usage:
+#   SENDER_TOKEN=xxx ./scripts/rf-collector.sh [--adapter rtl_433] [--freq 315M] [--protocol tpms]
+#
+# Env vars:
+#   SENDER_TOKEN       - Required. Device JWT for API auth
+#   API_URL            - API endpoint. Default: http://localhost:4000
+#   RF_ADAPTER         - Adapter name. Default: rtl_433 (overridden by --adapter)
+#   RTL_433_FREQ       - Frequency for rtl_433 (overridden by --freq)
+#   RTL_433_DEVICE     - Device index/serial for rtl_433
+#   RTL_433_GAIN       - Gain setting for rtl_433
+#   RTL_433_PROTOCOLS  - Protocol filter for rtl_433 (e.g. "tpms")
+#   RTL_433_EXTRA_ARGS - Extra args for rtl_433
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+log() { echo "[rf-collector] $*" >&2; }
+
+# --- Defaults ---
+ADAPTER="${RF_ADAPTER:-rtl_433}"
+
+# --- Parse args ---
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --adapter)
+      ADAPTER="$2"
+      shift 2
+      ;;
+    --freq)
+      export RTL_433_FREQ="$2"
+      shift 2
+      ;;
+    --protocol)
+      export RTL_433_PROTOCOLS="$2"
+      shift 2
+      ;;
+    --help|-h)
+      cat >&2 <<EOF
+RF Collector — capture radio observations and ship to API
+
+Usage:
+  SENDER_TOKEN=xxx ./scripts/rf-collector.sh [OPTIONS]
+
+Options:
+  --adapter NAME    Radio adapter (default: rtl_433)
+  --freq FREQ       Frequency (e.g. 315M, 433.92M)
+  --protocol PROTO  Protocol filter (e.g. tpms)
+  --help            Show this help
+
+Environment:
+  SENDER_TOKEN       Required. Device JWT for API authentication
+  API_URL            API endpoint (default: http://localhost:4000)
+  RF_ADAPTER         Adapter name (default: rtl_433)
+  RTL_433_DEVICE     Device index or serial number
+  RTL_433_GAIN       Gain setting
+  RTL_433_EXTRA_ARGS Additional rtl_433 arguments
+
+Examples:
+  # TPMS on US frequency
+  SENDER_TOKEN=xxx ./scripts/rf-collector.sh --freq 315M --protocol tpms
+
+  # All protocols, EU frequency
+  SENDER_TOKEN=xxx ./scripts/rf-collector.sh --freq 433.92M
+
+  # Custom adapter
+  SENDER_TOKEN=xxx ./scripts/rf-collector.sh --adapter my_sdr
+EOF
+      exit 0
+      ;;
+    *)
+      log "Unknown option: $1"
+      exit 1
+      ;;
+  esac
+done
+
+# --- Validate ---
+: "${SENDER_TOKEN:?SENDER_TOKEN is required}"
+
+ADAPTER_PATH="${SCRIPT_DIR}/adapters/${ADAPTER}.sh"
+if [[ ! -x "$ADAPTER_PATH" ]]; then
+  log "ERROR: Adapter not found or not executable: $ADAPTER_PATH"
+  log "Available adapters:"
+  for f in "${SCRIPT_DIR}"/adapters/*.sh; do
+    [[ -x "$f" ]] && log "  $(basename "$f" .sh)"
+  done
+  exit 1
+fi
+
+SENDER_PATH="${SCRIPT_DIR}/radio_sender.sh"
+if [[ ! -x "$SENDER_PATH" ]]; then
+  log "ERROR: radio_sender.sh not found at $SENDER_PATH"
+  exit 1
+fi
+
+# --- Startup banner ---
+log "============================================"
+log " RF Collector"
+log "============================================"
+log " Adapter:   $ADAPTER"
+log " API:       ${API_URL:-http://localhost:4000}"
+[[ -n "${RTL_433_FREQ:-}" ]]      && log " Frequency: $RTL_433_FREQ"
+[[ -n "${RTL_433_PROTOCOLS:-}" ]] && log " Protocols: $RTL_433_PROTOCOLS"
+[[ -n "${RTL_433_DEVICE:-}" ]]    && log " Device:    $RTL_433_DEVICE"
+[[ -n "${RTL_433_GAIN:-}" ]]      && log " Gain:      $RTL_433_GAIN"
+log "============================================"
+
+# --- Signal handling: kill entire process group on exit ---
+cleanup() {
+  log "Shutting down..."
+  kill 0 2>/dev/null || true
+  wait 2>/dev/null || true
+  log "Stopped."
+}
+trap cleanup SIGINT SIGTERM EXIT
+
+# --- Launch pipeline: adapter | sender ---
+"$ADAPTER_PATH" | "$SENDER_PATH" &
+wait $!
