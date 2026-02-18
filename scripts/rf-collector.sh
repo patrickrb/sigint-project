@@ -34,8 +34,32 @@ while [[ $# -gt 0 ]]; do
       export RTL_433_FREQ="$2"
       shift 2
       ;;
+    --freqs)
+      export RTL_433_FREQS="$2"
+      shift 2
+      ;;
     --protocol)
       export RTL_433_PROTOCOLS="$2"
+      shift 2
+      ;;
+    --hackrf-freq-min)
+      export HACKRF_FREQ_MIN="$2"
+      shift 2
+      ;;
+    --hackrf-freq-max)
+      export HACKRF_FREQ_MAX="$2"
+      shift 2
+      ;;
+    --hackrf-serial)
+      export HACKRF_SERIAL="$2"
+      shift 2
+      ;;
+    --hackrf-lna-gain)
+      export HACKRF_LNA_GAIN="$2"
+      shift 2
+      ;;
+    --hackrf-vga-gain)
+      export HACKRF_VGA_GAIN="$2"
       shift 2
       ;;
     --help|-h)
@@ -46,10 +70,16 @@ Usage:
   SENDER_TOKEN=xxx ./scripts/rf-collector.sh [OPTIONS]
 
 Options:
-  --adapter NAME    Radio adapter (default: rtl_433)
-  --freq FREQ       Frequency (e.g. 315M, 433.92M)
-  --protocol PROTO  Protocol filter (e.g. tpms)
-  --help            Show this help
+  --adapter NAME          Radio adapter (default: rtl_433)
+  --freq FREQ             Single frequency (e.g. 315M, 433.92M)
+  --freqs FREQS           Comma-separated frequencies for hopping (e.g. 433.92M,315M)
+  --protocol PROTO        Protocol filter (e.g. tpms)
+  --hackrf-freq-min FREQ  HackRF minimum frequency (e.g. 300M)
+  --hackrf-freq-max FREQ  HackRF maximum frequency (e.g. 928M)
+  --hackrf-serial SN      HackRF device serial number
+  --hackrf-lna-gain DB    HackRF LNA gain (0-40 dB)
+  --hackrf-vga-gain DB    HackRF VGA gain (0-62 dB)
+  --help                  Show this help
 
 Environment:
   SENDER_TOKEN       Required. Device JWT for API authentication
@@ -63,11 +93,11 @@ Examples:
   # TPMS on US frequency
   SENDER_TOKEN=xxx ./scripts/rf-collector.sh --freq 315M --protocol tpms
 
-  # All protocols, EU frequency
-  SENDER_TOKEN=xxx ./scripts/rf-collector.sh --freq 433.92M
+  # Multi-frequency hopping
+  SENDER_TOKEN=xxx ./scripts/rf-collector.sh --freqs 433.92M,315M
 
-  # Custom adapter
-  SENDER_TOKEN=xxx ./scripts/rf-collector.sh --adapter my_sdr
+  # HackRF wide-band capture
+  SENDER_TOKEN=xxx ./scripts/rf-collector.sh --adapter hackrf --hackrf-freq-min 300M --hackrf-freq-max 928M
 EOF
       exit 0
       ;;
@@ -103,10 +133,14 @@ log " RF Collector"
 log "============================================"
 log " Adapter:   $ADAPTER"
 log " API:       ${API_URL:-http://localhost:4000}"
-[[ -n "${RTL_433_FREQ:-}" ]]      && log " Frequency: $RTL_433_FREQ"
+[[ -n "${RTL_433_FREQS:-}" ]]      && log " Frequencies: $RTL_433_FREQS (hopping)"
+[[ -n "${RTL_433_FREQ:-}" && -z "${RTL_433_FREQS:-}" ]] && log " Frequency: $RTL_433_FREQ"
 [[ -n "${RTL_433_PROTOCOLS:-}" ]] && log " Protocols: $RTL_433_PROTOCOLS"
 [[ -n "${RTL_433_DEVICE:-}" ]]    && log " Device:    $RTL_433_DEVICE"
 [[ -n "${RTL_433_GAIN:-}" ]]      && log " Gain:      $RTL_433_GAIN"
+[[ -n "${HACKRF_FREQ_MIN:-}" ]]   && log " HackRF Min: $HACKRF_FREQ_MIN"
+[[ -n "${HACKRF_FREQ_MAX:-}" ]]   && log " HackRF Max: $HACKRF_FREQ_MAX"
+[[ -n "${HACKRF_SERIAL:-}" ]]     && log " HackRF SN:  $HACKRF_SERIAL"
 log "============================================"
 
 # --- Signal handling: kill entire process group on exit ---

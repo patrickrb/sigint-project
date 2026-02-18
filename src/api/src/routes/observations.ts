@@ -135,6 +135,76 @@ router.get("/api/observations/rssi-distribution", authenticateUser, async (req: 
   }
 });
 
+// SNR quality distribution: bucket observations by signal-to-noise ratio
+router.get("/api/observations/snr-distribution", authenticateUser, async (req: Request, res: Response) => {
+  try {
+    const rows = await prisma.$queryRaw<Array<{ bucket: string; count: bigint }>>`
+      SELECT bucket, count FROM (
+        SELECT
+          CASE
+            WHEN snr IS NULL THEN 'No data'
+            WHEN snr >= 20 THEN 'Excellent (20+)'
+            WHEN snr >= 10 THEN 'Good (10-20)'
+            WHEN snr >= 5  THEN 'Fair (5-10)'
+            ELSE 'Poor (<5)'
+          END AS bucket,
+          COUNT(*)::bigint AS count,
+          CASE
+            WHEN snr IS NULL THEN -1
+            WHEN snr >= 20 THEN 3
+            WHEN snr >= 10 THEN 2
+            WHEN snr >= 5  THEN 1
+            ELSE 0
+          END AS sort_order
+        FROM observations
+        GROUP BY bucket, sort_order
+      ) sub
+      ORDER BY sort_order ASC
+    `;
+
+    const distribution = rows
+      .filter((r) => r.bucket !== "No data")
+      .map((r) => ({
+        range: r.bucket,
+        count: Number(r.count),
+      }));
+
+    res.json({ distribution });
+  } catch (err) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Noise floor timeline: average/min/max noise per minute
+router.get("/api/observations/noise-timeline", authenticateUser, async (req: Request, res: Response) => {
+  try {
+    const minutes = Math.min(parseInt(req.query.minutes as string) || 60, 1440);
+    const since = new Date(Date.now() - minutes * 60 * 1000);
+
+    const rows = await prisma.$queryRaw<Array<{ bucket: Date; avg_noise: number; min_noise: number; max_noise: number }>>`
+      SELECT date_trunc('minute', "receivedAt") AS bucket,
+             AVG(noise)::float AS avg_noise,
+             MIN(noise)::float AS min_noise,
+             MAX(noise)::float AS max_noise
+      FROM observations
+      WHERE "receivedAt" >= ${since} AND noise IS NOT NULL
+      GROUP BY bucket
+      ORDER BY bucket ASC
+    `;
+
+    const timeline = rows.map((r) => ({
+      time: r.bucket.toISOString(),
+      avgNoise: Math.round(r.avg_noise * 10) / 10,
+      minNoise: Math.round(r.min_noise * 10) / 10,
+      maxNoise: Math.round(r.max_noise * 10) / 10,
+    }));
+
+    res.json({ timeline });
+  } catch (err) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 // Timeline histogram: observation counts bucketed by minute over the last hour
 router.get("/api/observations/timeline", authenticateUser, async (req: Request, res: Response) => {
   try {

@@ -15,6 +15,7 @@ import {
   YAxis,
   Tooltip,
   ResponsiveContainer,
+  Legend,
 } from "recharts";
 
 const CHART_COLORS = {
@@ -367,6 +368,180 @@ export function RSSIDistribution() {
           ))}
         </Bar>
       </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
+interface SNRBucket {
+  range: string;
+  count: number;
+}
+
+const SNR_BAR_COLORS: Record<string, string> = {
+  "Poor (<5)": CHART_COLORS.destructive,
+  "Fair (5-10)": CHART_COLORS.warning,
+  "Good (10-20)": CHART_COLORS.primary,
+  "Excellent (20+)": CHART_COLORS.accent,
+};
+
+export function SNRDistribution() {
+  const { data: session } = useSession();
+  const [data, setData] = useState<SNRBucket[]>([]);
+
+  const token = (session?.user as any)?.apiToken;
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
+
+  const fetchData = useCallback(async () => {
+    if (!token) return;
+    try {
+      const res = await fetch(`${apiUrl}/api/observations/snr-distribution`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const json = await res.json();
+        setData(json.distribution || []);
+      }
+    } catch {}
+  }, [token, apiUrl]);
+
+  useEffect(() => {
+    fetchData();
+    const interval = setInterval(fetchData, 5000);
+    const unsub = onDataChanged(fetchData);
+    return () => { clearInterval(interval); unsub(); };
+  }, [fetchData]);
+
+  if (data.length === 0) {
+    return (
+      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+        No SNR data yet
+      </div>
+    );
+  }
+
+  return (
+    <ResponsiveContainer width="100%" height="100%">
+      <BarChart data={data} layout="vertical" margin={{ top: 4, right: 20, bottom: 0, left: 10 }}>
+        <XAxis
+          type="number"
+          tick={{ fill: "#a1a1a1", fontSize: 10 }}
+          axisLine={false}
+          tickLine={false}
+          allowDecimals={false}
+        />
+        <YAxis
+          type="category"
+          dataKey="range"
+          tick={{ fill: "#a1a1a1", fontSize: 10 }}
+          axisLine={false}
+          tickLine={false}
+          width={100}
+        />
+        <Tooltip content={<ChartTooltipContent />} />
+        <Bar dataKey="count" name="Observations" radius={[0, 3, 3, 0]}>
+          {data.map((entry, i) => (
+            <Cell key={i} fill={SNR_BAR_COLORS[entry.range] || CHART_COLORS.primary} />
+          ))}
+        </Bar>
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
+interface NoiseTimelinePoint {
+  time: string;
+  avgNoise: number;
+  minNoise: number;
+  maxNoise: number;
+}
+
+export function NoiseFloorTimeline() {
+  const { data: session } = useSession();
+  const [data, setData] = useState<NoiseTimelinePoint[]>([]);
+
+  const token = (session?.user as any)?.apiToken;
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
+
+  const fetchData = useCallback(async () => {
+    if (!token) return;
+    try {
+      const res = await fetch(`${apiUrl}/api/observations/noise-timeline?minutes=60`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const json = await res.json();
+        setData(json.timeline || []);
+      }
+    } catch {}
+  }, [token, apiUrl]);
+
+  useEffect(() => {
+    fetchData();
+    const interval = setInterval(fetchData, 5000);
+    const unsub = onDataChanged(fetchData);
+    return () => { clearInterval(interval); unsub(); };
+  }, [fetchData]);
+
+  if (data.length === 0) {
+    return (
+      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+        No noise floor data yet
+      </div>
+    );
+  }
+
+  return (
+    <ResponsiveContainer width="100%" height="100%">
+      <AreaChart data={data} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
+        <defs>
+          <linearGradient id="noiseRangeGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="5%" stopColor={CHART_COLORS.purple} stopOpacity={0.2} />
+            <stop offset="95%" stopColor={CHART_COLORS.purple} stopOpacity={0} />
+          </linearGradient>
+        </defs>
+        <XAxis
+          dataKey="time"
+          tickFormatter={formatTime}
+          tick={{ fill: "#a1a1a1", fontSize: 10 }}
+          axisLine={false}
+          tickLine={false}
+          minTickGap={40}
+        />
+        <YAxis
+          tick={{ fill: "#a1a1a1", fontSize: 10 }}
+          axisLine={false}
+          tickLine={false}
+          domain={["auto", "auto"]}
+          tickFormatter={(v: number) => `${v}`}
+        />
+        <Tooltip content={<ChartTooltipContent />} />
+        <Area
+          type="monotone"
+          dataKey="maxNoise"
+          name="Max"
+          stroke="transparent"
+          fill="url(#noiseRangeGrad)"
+        />
+        <Area
+          type="monotone"
+          dataKey="minNoise"
+          name="Min"
+          stroke={CHART_COLORS.purple}
+          strokeWidth={1}
+          strokeDasharray="3 3"
+          fill="transparent"
+          fillOpacity={0}
+        />
+        <Area
+          type="monotone"
+          dataKey="avgNoise"
+          name="Avg Noise"
+          stroke={CHART_COLORS.purple}
+          strokeWidth={2}
+          fill="transparent"
+          fillOpacity={0}
+        />
+      </AreaChart>
     </ResponsiveContainer>
   );
 }
