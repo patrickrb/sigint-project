@@ -111,6 +111,7 @@ log "============================================"
 
 # --- Signal handling: kill entire process group on exit ---
 cleanup() {
+  trap - SIGINT SIGTERM EXIT
   log "Shutting down..."
   kill 0 2>/dev/null || true
   wait 2>/dev/null || true
