@@ -90,6 +90,9 @@ router.get("/api/observations/stats", authenticateUser, async (req: Request, res
 // RSSI signal strength distribution: bucket observations by dBm range
 router.get("/api/observations/rssi-distribution", authenticateUser, async (req: Request, res: Response) => {
   try {
+    const days = Math.min(Math.max(parseInt(req.query.days as string) || 7, 1), 90);
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
     const rows = await prisma.$queryRaw<Array<{ bucket: string; count: bigint }>>`
       SELECT bucket, count FROM (
         SELECT
@@ -117,6 +120,7 @@ router.get("/api/observations/rssi-distribution", authenticateUser, async (req: 
             ELSE 0
           END AS sort_order
         FROM observations
+        WHERE "receivedAt" >= ${since}
         GROUP BY bucket, sort_order
       ) sub
       ORDER BY sort_order ASC
@@ -138,6 +142,9 @@ router.get("/api/observations/rssi-distribution", authenticateUser, async (req: 
 // SNR quality distribution: bucket observations by signal-to-noise ratio
 router.get("/api/observations/snr-distribution", authenticateUser, async (req: Request, res: Response) => {
   try {
+    const days = Math.min(Math.max(parseInt(req.query.days as string) || 7, 1), 90);
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
     const rows = await prisma.$queryRaw<Array<{ bucket: string; count: bigint }>>`
       SELECT bucket, count FROM (
         SELECT
@@ -157,6 +164,7 @@ router.get("/api/observations/snr-distribution", authenticateUser, async (req: R
             ELSE 0
           END AS sort_order
         FROM observations
+        WHERE "receivedAt" >= ${since}
         GROUP BY bucket, sort_order
       ) sub
       ORDER BY sort_order ASC
