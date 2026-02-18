@@ -10,6 +10,7 @@ set -euo pipefail
 #   RTL_433_DEVICE     - Device index or serial. Default: rtl_433 default
 #   RTL_433_GAIN       - Gain setting. Default: rtl_433 default
 #   RTL_433_PROTOCOLS  - Protocol filter: "tpms" or empty for all. Default: all
+#   RTL_433_NOISE_WIN  - Noise floor measurement window in seconds. Default: 60 (30 when hopping)
 #   RTL_433_EXTRA_ARGS - Extra args passed to rtl_433
 #   RTL_433_STDIN      - If "true", read rtl_433-format JSON from stdin (testing)
 
@@ -43,26 +44,41 @@ check_deps() {
 
 # --- Build rtl_433 command ---
 build_rtl_433_cmd() {
-  local cmd=(rtl_433 -F json -M time:utc -M level -M protocol -M noise:60)
+  local hopping=false
 
   # Multi-frequency hopping takes priority over single frequency
   if [[ -n "${RTL_433_FREQS:-}" && -n "${RTL_433_FREQ:-}" ]]; then
     log "WARNING: Both RTL_433_FREQS and RTL_433_FREQ are set; ignoring RTL_433_FREQ in favor of RTL_433_FREQS"
   fi
+
+  local freq_args=()
   if [[ -n "${RTL_433_FREQS:-}" ]]; then
     local freq_count=0
     IFS=',' read -ra freqs <<< "$RTL_433_FREQS"
     for f in "${freqs[@]}"; do
       f=$(echo "$f" | tr -d ' ')
-      [[ -n "$f" ]] && cmd+=(-f "$f") && freq_count=$((freq_count + 1))
+      [[ -n "$f" ]] && freq_args+=(-f "$f") && freq_count=$((freq_count + 1))
     done
-    # Add hop interval when multiple frequencies
     if (( freq_count > 1 )); then
-      cmd+=(-H 30)
+      freq_args+=(-H 30)
+      hopping=true
     fi
   elif [[ -n "${RTL_433_FREQ:-}" ]]; then
-    cmd+=(-f "$RTL_433_FREQ")
+    freq_args+=(-f "$RTL_433_FREQ")
   fi
+
+  # Noise window: use explicit setting, or 30s when hopping (matches hop interval), 60s otherwise
+  local noise_win="${RTL_433_NOISE_WIN:-}"
+  if [[ -z "$noise_win" ]]; then
+    if [[ "$hopping" == "true" ]]; then
+      noise_win=30
+    else
+      noise_win=60
+    fi
+  fi
+
+  local cmd=(rtl_433 -F json -M time:utc -M level -M protocol -M "noise:${noise_win}")
+  cmd+=("${freq_args[@]}")
 
   if [[ -n "${RTL_433_DEVICE:-}" ]]; then
     cmd+=(-d "$RTL_433_DEVICE")
