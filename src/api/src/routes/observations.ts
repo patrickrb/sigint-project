@@ -87,4 +87,179 @@ router.get("/api/observations/stats", authenticateUser, async (req: Request, res
   }
 });
 
+// RSSI signal strength distribution: bucket observations by dBm range
+router.get("/api/observations/rssi-distribution", authenticateUser, async (req: Request, res: Response) => {
+  try {
+    const rows = await prisma.$queryRaw<Array<{ bucket: string; count: bigint }>>`
+      SELECT bucket, count FROM (
+        SELECT
+          CASE
+            WHEN rssi IS NULL THEN 'No data'
+            WHEN rssi >= -30 THEN '-30+'
+            WHEN rssi >= -40 THEN '-40 to -31'
+            WHEN rssi >= -50 THEN '-50 to -41'
+            WHEN rssi >= -60 THEN '-60 to -51'
+            WHEN rssi >= -70 THEN '-70 to -61'
+            WHEN rssi >= -80 THEN '-80 to -71'
+            WHEN rssi >= -90 THEN '-90 to -81'
+            ELSE 'Below -90'
+          END AS bucket,
+          COUNT(*)::bigint AS count,
+          CASE
+            WHEN rssi IS NULL THEN -1
+            WHEN rssi >= -30 THEN 7
+            WHEN rssi >= -40 THEN 6
+            WHEN rssi >= -50 THEN 5
+            WHEN rssi >= -60 THEN 4
+            WHEN rssi >= -70 THEN 3
+            WHEN rssi >= -80 THEN 2
+            WHEN rssi >= -90 THEN 1
+            ELSE 0
+          END AS sort_order
+        FROM observations
+        GROUP BY bucket, sort_order
+      ) sub
+      ORDER BY sort_order ASC
+    `;
+
+    const distribution = rows
+      .filter((r) => r.bucket !== "No data")
+      .map((r) => ({
+        range: r.bucket,
+        count: Number(r.count),
+      }));
+
+    res.json({ distribution });
+  } catch (err) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Timeline histogram: observation counts bucketed by minute over the last hour
+router.get("/api/observations/timeline", authenticateUser, async (req: Request, res: Response) => {
+  try {
+    const minutes = Math.min(parseInt(req.query.minutes as string) || 60, 1440);
+    const since = new Date(Date.now() - minutes * 60 * 1000);
+
+    const rows = await prisma.$queryRaw<Array<{ bucket: Date; count: bigint }>>`
+      SELECT date_trunc('minute', "receivedAt") AS bucket, COUNT(*)::bigint AS count
+      FROM observations
+      WHERE "receivedAt" >= ${since}
+      GROUP BY bucket
+      ORDER BY bucket ASC
+    `;
+
+    const timeline = rows.map((r) => ({
+      time: r.bucket.toISOString(),
+      count: Number(r.count),
+    }));
+
+    res.json({ timeline });
+  } catch (err) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Protocol breakdown: top protocols by observation count
+router.get("/api/observations/protocols", authenticateUser, async (req: Request, res: Response) => {
+  try {
+    const rows = await prisma.$queryRaw<Array<{ protocol: string; count: bigint }>>`
+      SELECT protocol, COUNT(*)::bigint AS count
+      FROM observations
+      GROUP BY protocol
+      ORDER BY count DESC
+      LIMIT 20
+    `;
+
+    const protocols = rows.map((r) => ({
+      protocol: r.protocol,
+      count: Number(r.count),
+    }));
+
+    res.json({ protocols });
+  } catch (err) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Classification breakdown over time: buckets by minute with known/unknown/pending counts
+router.get("/api/observations/classification-timeline", authenticateUser, async (req: Request, res: Response) => {
+  try {
+    const minutes = Math.min(parseInt(req.query.minutes as string) || 60, 1440);
+    const since = new Date(Date.now() - minutes * 60 * 1000);
+
+    const rows = await prisma.$queryRaw<Array<{ bucket: Date; classification: string; count: bigint }>>`
+      SELECT date_trunc('minute', "receivedAt") AS bucket, classification, COUNT(*)::bigint AS count
+      FROM observations
+      WHERE "receivedAt" >= ${since}
+      GROUP BY bucket, classification
+      ORDER BY bucket ASC
+    `;
+
+    // Pivot into { time, KNOWN, UNKNOWN, PENDING }
+    const map = new Map<string, { time: string; KNOWN: number; UNKNOWN: number; PENDING: number }>();
+    for (const row of rows) {
+      const key = row.bucket.toISOString();
+      if (!map.has(key)) {
+        map.set(key, { time: key, KNOWN: 0, UNKNOWN: 0, PENDING: 0 });
+      }
+      const entry = map.get(key)!;
+      if (row.classification === "KNOWN" || row.classification === "UNKNOWN" || row.classification === "PENDING") {
+        entry[row.classification] = Number(row.count);
+      }
+    }
+
+    res.json({ timeline: Array.from(map.values()) });
+  } catch (err) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.post("/api/observations/:id/approve", authenticateUser, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    const observation = await prisma.observation.findUnique({
+      where: { id },
+      select: { id: true, signature: true, protocol: true, classification: true },
+    });
+
+    if (!observation) {
+      res.status(404).json({ error: "Observation not found" });
+      return;
+    }
+
+    if (observation.classification === "KNOWN") {
+      res.json({ message: "Already known", observation });
+      return;
+    }
+
+    // Create whitelist entry (skip if signature already whitelisted)
+    const existing = await prisma.whitelistEntry.findUnique({
+      where: { signature: observation.signature },
+    });
+
+    if (!existing) {
+      await prisma.whitelistEntry.create({
+        data: {
+          signature: observation.signature,
+          label: `${observation.protocol} device`,
+          protocol: observation.protocol,
+          userId: req.user!.userId,
+        },
+      });
+    }
+
+    // Mark this observation and all others with the same signature as KNOWN
+    const updated = await prisma.observation.updateMany({
+      where: { signature: observation.signature, classification: { in: ["PENDING", "UNKNOWN"] } },
+      data: { classification: "KNOWN" },
+    });
+
+    res.json({ approved: true, updated: updated.count });
+  } catch (err) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 export default router;

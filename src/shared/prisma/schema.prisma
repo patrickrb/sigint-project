@@ -134,3 +134,13 @@ enum Severity {
   WARNING
   CRITICAL
 }
+
+model ProtocolRule {
+  id             String         @id @default(cuid())
+  pattern        String         @unique
+  classification Classification @default(KNOWN)
+  label          String
+  createdAt      DateTime       @default(now())
+
+  @@map("protocol_rules")
+}

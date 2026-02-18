@@ -39,14 +39,13 @@ router.post("/api/ingest", authenticateSender, async (req: Request, res: Respons
       };
     });
 
-    // Check which signatures are whitelisted
+    // Only whitelisted signatures are KNOWN — everything else stays PENDING for worker classification
     const whitelisted = await prisma.whitelistEntry.findMany({
       where: { signature: { in: Array.from(signatures) } },
       select: { signature: true },
     });
     const whitelistedSet = new Set(whitelisted.map((w) => w.signature));
 
-    // Set classification based on whitelist
     const finalData = dataToInsert.map((d) => ({
       ...d,
       classification: whitelistedSet.has(d.signature) ? ("KNOWN" as const) : ("PENDING" as const),

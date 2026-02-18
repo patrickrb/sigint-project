@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { useSession } from "next-auth/react";
+import { onDataChanged } from "@/lib/events";
 import { Card, CardContent } from "@/components/ui/card";
 import { Activity, Wifi, HelpCircle, Radio } from "lucide-react";
 
@@ -40,25 +41,25 @@ export function LiveStats() {
   const { data: session } = useSession();
   const [stats, setStats] = useState<Stats | null>(null);
 
-  useEffect(() => {
-    if (!session) return;
-    const token = (session.user as any).apiToken;
+  const token = (session?.user as any)?.apiToken;
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
+
+  const fetchStats = useCallback(async () => {
     if (!token) return;
+    try {
+      const res = await fetch(`${apiUrl}/api/observations/stats`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) setStats(await res.json());
+    } catch {}
+  }, [token, apiUrl]);
 
-    async function fetchStats() {
-      try {
-        const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
-        const res = await fetch(`${apiUrl}/api/observations/stats`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (res.ok) setStats(await res.json());
-      } catch {}
-    }
-
+  useEffect(() => {
     fetchStats();
     const interval = setInterval(fetchStats, 5000);
-    return () => clearInterval(interval);
-  }, [session]);
+    const unsub = onDataChanged(fetchStats);
+    return () => { clearInterval(interval); unsub(); };
+  }, [fetchStats]);
 
   if (!stats) {
     return (

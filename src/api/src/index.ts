@@ -24,6 +24,8 @@ import whitelistRoutes from "./routes/whitelist";
 import ruleRoutes from "./routes/rules";
 import alertRoutes from "./routes/alerts";
 import eventRoutes from "./routes/events";
+import protocolRuleRoutes from "./routes/protocol-rules";
+import { seedProtocolRules } from "./services/seed-protocol-rules";
 
 const app = express();
 const server = createServer(app);
@@ -74,6 +76,7 @@ app.use(whitelistRoutes);
 app.use(ruleRoutes);
 app.use(alertRoutes);
 app.use(eventRoutes);
+app.use(protocolRuleRoutes);
 
 // 404 handler
 app.use((_req, res) => {
@@ -96,6 +99,7 @@ const PORT = parseInt(process.env.API_PORT || "4000", 10);
 
 server.listen(PORT, () => {
   logger.info({ port: PORT }, "RF Telemetry API server started");
+  seedProtocolRules();
 });
 
 export { app, server };

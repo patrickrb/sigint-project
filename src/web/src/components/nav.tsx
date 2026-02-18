@@ -11,12 +11,14 @@ import {
   AlertTriangle,
   Activity,
   Radar,
+  Tags,
 } from "lucide-react";
 
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/senders", label: "Senders", icon: Radio },
   { href: "/whitelist", label: "Whitelist", icon: Shield },
+  { href: "/classification", label: "Classification", icon: Tags },
   { href: "/rules", label: "Rules", icon: Activity },
   { href: "/alerts", label: "Alerts", icon: AlertTriangle },
 ];

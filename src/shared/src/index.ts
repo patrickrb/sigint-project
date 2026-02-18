@@ -6,6 +6,7 @@ export type {
   WhitelistEntry,
   Rule,
   AlertEvent,
+  ProtocolRule,
 } from "@prisma/client";
 export type {
   Role,
@@ -21,5 +22,7 @@ export * from "./schemas/whitelist";
 export * from "./schemas/rule";
 export * from "./schemas/alert";
 export * from "./schemas/auth";
+export * from "./schemas/protocol-rule";
 export * from "./utils/signature";
 export * from "./utils/constants";
+export * from "./utils/protocol-match";

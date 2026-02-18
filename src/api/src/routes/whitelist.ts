@@ -54,9 +54,9 @@ router.post("/api/whitelist", authenticateUser, async (req: Request, res: Respon
       },
     });
 
-    // Update existing PENDING observations with this signature to KNOWN
+    // Update existing PENDING and UNKNOWN observations with this signature to KNOWN
     await prisma.observation.updateMany({
-      where: { signature, classification: "PENDING" },
+      where: { signature, classification: { in: ["PENDING", "UNKNOWN"] } },
       data: { classification: "KNOWN" },
     });
 
@@ -77,6 +77,12 @@ router.delete("/api/whitelist/:id", authenticateUser, async (req: Request, res: 
     }
 
     await prisma.whitelistEntry.delete({ where: { id } });
+
+    // Revert KNOWN observations with this signature back to UNKNOWN
+    await prisma.observation.updateMany({
+      where: { signature: entry.signature, classification: "KNOWN" },
+      data: { classification: "UNKNOWN" },
+    });
 
     res.json({ deleted: true });
   } catch (err) {
