@@ -113,6 +113,9 @@ enum RuleType {
   UNKNOWN_BURST
   NEW_DEVICE
   CUSTOM
+  BLE_TRACKER
+  BLE_FLOOD
+  SPECTRUM_ANOMALY
 }
 
 model AlertEvent {

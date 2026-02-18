@@ -51,6 +51,19 @@ function formatFieldValue(key: string, value: unknown): string {
   if (k.includes("pressure") && k.includes("hpa") && typeof value === "number") return `${value} hPa`;
   if (k.includes("rain") && k.includes("mm") && typeof value === "number") return `${value} mm`;
   if (k === "battery_ok") return value ? "OK" : "Low";
+  if (k === "machash" && typeof value === "string") return `${value.slice(0, 12)}...`;
+  if (k === "channel" && typeof value === "number") return `Ch ${value}`;
+  if (k === "txpower" && typeof value === "number") return `${value} dBm`;
+  if (k === "deviationsigma" && typeof value === "number") return `${value}σ`;
+  if (k === "burstcount" && typeof value === "number") return `${value} bursts`;
+  if (k === "dwellms" && typeof value === "number") return `${value} ms`;
+  if (k === "binwidthhz" && typeof value === "number") return `${(value / 1e6).toFixed(1)} MHz`;
+  if (k === "baselinepower" && typeof value === "number") return `${value} dBm`;
+  if (k === "measuredpower" && typeof value === "number") return `${value} dBm`;
+  if (k === "meanpower" && typeof value === "number") return `${value} dBm`;
+  if (k === "minpower" && typeof value === "number") return `${value} dBm`;
+  if (k === "maxpower" && typeof value === "number") return `${value} dBm`;
+  if (k === "peakpower" && typeof value === "number") return `${value} dBm`;
   if (typeof value === "boolean") return value ? "Yes" : "No";
   return String(value);
 }

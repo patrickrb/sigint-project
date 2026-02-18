@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-RF Home Telemetry Dashboard — a privacy-minded, receive-only RF telemetry monitoring system. Ingests observation events from radio receivers, classifies them against a whitelist, and displays live telemetry in a web dashboard.
+RF Home Telemetry Dashboard — a privacy-minded, receive-only RF telemetry monitoring system. Ingests observation events from radio receivers, classifies them against a whitelist, and displays live telemetry in a web dashboard. Supports RTL-SDR (sub-GHz ISM), HackRF wideband spectrum sweep (1 MHz–6 GHz), and HackRF BLE capture (2.4 GHz advertising channels).
 
 ## Commands
 
@@ -33,7 +33,7 @@ npm run dev:worker     # Background classifier worker
 
 ```bash
 npm test                                  # All workspaces
-cd src/shared && npx vitest run           # Shared tests (21 tests)
+cd src/shared && npx vitest run           # Shared tests (26 tests)
 cd src/api && npx vitest run              # API tests (3 tests)
 npx vitest run path/to/file.test.ts       # Single test file
 ```
@@ -62,6 +62,24 @@ export SENDER_ID="<sender-id-from-seed>"
 ./scripts/generate_simulated_observations.sh | ./scripts/radio_sender.sh
 ```
 
+### Edge Setup & RF Collection
+
+```bash
+# Install edge dependencies (RTL-SDR, HackRF tools, Python, numpy)
+./scripts/setup-edge.sh                    # Full install
+./scripts/setup-edge.sh --skip-hackrf      # Skip HackRF/Python deps
+./scripts/setup-edge.sh --skip-optional    # Skip websocat
+
+# RTL-SDR collection
+SENDER_TOKEN=xxx ./scripts/rf-collector.sh --freq 315M --protocol tpms
+
+# HackRF wideband sweep (1 MHz–6 GHz anomaly detection)
+SENDER_TOKEN=xxx ./scripts/rf-collector.sh --adapter hackrf_sweep
+
+# HackRF BLE capture (2.4 GHz advertising channels)
+SENDER_TOKEN=xxx ./scripts/rf-collector.sh --adapter hackrf_ble --ble-dwell-ms 200
+```
+
 ### Linting
 
 ```bash
@@ -77,7 +95,7 @@ src/shared/                    → @rf-telemetry/shared (Prisma + Zod schemas + 
 src/api/                       → @rf-telemetry/api (Express REST + WebSocket + SSE, port 4000)
 src/web/                       → @rf-telemetry/web (Next.js 15 + Tailwind + recharts, port 3000)
 services/data-processor-worker → @rf-telemetry/worker (polling-based classifier + alerting)
-scripts/                       → Bash simulators and RF data senders
+scripts/                       → Bash adapters, Python processors, and RF data senders
 ```
 
 **Dependency flow**: shared → api, web, worker (shared must be built first via `tsc`)
@@ -100,13 +118,17 @@ Express server with:
 - Sender auth middleware: SHA-256 token hash lookup (`src/middleware/`)
 - Token encryption: AES-256-GCM for sender token storage (`src/services/crypto.ts`)
 - Protocol rules seeded on startup (`src/services/seed-protocol-rules.ts`)
+- Alert rules seeded on startup (`src/services/seed-alert-rules.ts`) — disabled by default
 
 ### Web (`src/web`)
 
 Next.js 15 App Router with React 19:
-- Dashboard page: `src/app/(dashboard)/dashboard/page.tsx`
+- Dashboard: `src/app/(dashboard)/dashboard/page.tsx`
+- Spectrum Monitor: `src/app/(dashboard)/spectrum/page.tsx`
+- Bluetooth Monitor: `src/app/(dashboard)/bluetooth/page.tsx`
 - Navigation: `src/components/nav.tsx`
-- Charts use recharts (AreaChart, BarChart, PieChart)
+- Charts: `src/components/charts.tsx` (main), `spectrum-charts.tsx`, `ble-charts.tsx`
+- All charts use recharts (AreaChart, BarChart, PieChart)
 - Auth: NextAuth v5 with JWT sessions
 - Event bus (`src/lib/events.ts`): `emitDataChanged()` / `onDataChanged(cb)` for cross-component instant refresh after mutations
 - API aggregation endpoints use raw SQL (`prisma.$queryRaw`) with `date_trunc` bucketing
@@ -115,8 +137,23 @@ Next.js 15 App Router with React 19:
 
 Polling-based (no job queue). Runs classification loop + retention cleanup:
 - `src/classifier.ts`: PENDING → KNOWN (whitelist match) or UNKNOWN
-- `src/rules.ts`: Evaluates alert rules (UNKNOWN_BURST, NEW_DEVICE)
+- `src/rules.ts`: Evaluates alert rules (UNKNOWN_BURST, NEW_DEVICE, BLE_TRACKER, BLE_FLOOD, SPECTRUM_ANOMALY)
 - `src/retention.ts`: Cleans old unknown observations based on `RETENTION_DAYS`
+
+### Edge Scripts
+
+RF adapter pipeline: `rf-collector.sh → adapter | radio_sender.sh → API ingest`
+
+Adapters (`scripts/adapters/`):
+- `rtl_433.sh` — RTL-SDR via rtl_433 JSON output + normalization
+- `hackrf.sh` — HackRF IQ capture → rtl_433 decode (sub-GHz ISM)
+- `hackrf_sweep.sh` — HackRF wideband sweep → Python anomaly detector
+- `hackrf_ble.sh` — HackRF BLE capture → Python GFSK decoder
+
+Python processors (`scripts/processors/`):
+- `sweep_processor.py` — Welford's online algorithm for per-bin baseline, EMA adaptive tracking, anomaly detection. Emits `spectrum-anomaly` and `spectrum-baseline` NDJSON.
+- `ble_processor.py` — Phase 2a: energy detection (burst counting per channel). Phase 2b: GFSK demod → BLE advertising PDU parsing (access address correlation, CRC-24, AD structures). MAC addresses SHA-256 hashed for privacy. Emits `ble-energy` and `ble-adv` NDJSON.
+- `requirements.txt` — `numpy>=1.24.0`
 
 ## Classification System
 
@@ -129,12 +166,35 @@ Polling-based (no job queue). Runs classification loop + retention cleanup:
 - Whitelist DELETE reverts KNOWN observations back to UNKNOWN.
 - ProtocolRule model is for informational labeling only, NOT auto-classification.
 
+## Protocols
+
+| Protocol | Source | Description |
+|---|---|---|
+| `tpms` | RTL-SDR/HackRF | Tire pressure monitoring sensors |
+| `acurite-*`, `oregon-*`, etc. | RTL-SDR/HackRF | Weather stations |
+| `spectrum-anomaly` | HackRF sweep | Power deviation beyond sigma threshold |
+| `spectrum-baseline` | HackRF sweep | Periodic per-band power summary |
+| `ble-energy` | HackRF BLE | Per-channel energy detection (burst count, RSSI) |
+| `ble-adv` | HackRF BLE | Decoded BLE advertising PDU (MAC hash, device name, manufacturer) |
+
+## Alert Rule Types
+
+| RuleType | Description | Config |
+|---|---|---|
+| `UNKNOWN_BURST` | Too many unknown observations from a sender | `threshold`, `windowSeconds` |
+| `NEW_DEVICE` | First-ever observation of a signature | (none) |
+| `BLE_TRACKER` | BLE device seen persistently (potential tracking) | `minObservations`, `windowMinutes`, `excludeKnown` |
+| `BLE_FLOOD` | Abnormal BLE advertising volume (jamming/fuzzing) | `threshold`, `windowSeconds` |
+| `SPECTRUM_ANOMALY` | Persistent wideband power anomaly | `minStreakMinutes`, `minDeviationSigma` |
+
 ## Key Technical Notes
 
 - Prisma JSON fields need `as object` cast when passing Zod-parsed `Record<string, unknown>`
 - `@rf-telemetry/shared` re-exports Prisma types but namespace types like `Prisma.DbNull` aren't accessible — use `as never` cast
 - Signal feed uses CSS grid with fixed `gridTemplateColumns` for aligned columns (not flex)
 - `tsconfig.base.json` at repo root is extended by all packages and must be included in Docker COPY lines
+- BLE MAC addresses are SHA-256 hashed (truncated to 16 hex chars) for privacy — never store raw MACs
+- Observation signatures use `rf-telemetry-v1:{protocol}:{key=value&...}` convention hashed with SHA-256
 
 ## Docker Notes
 

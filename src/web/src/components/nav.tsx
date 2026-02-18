@@ -12,10 +12,14 @@ import {
   Activity,
   Radar,
   Tags,
+  Waves,
+  Bluetooth,
 } from "lucide-react";
 
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/spectrum", label: "Spectrum", icon: Waves },
+  { href: "/bluetooth", label: "Bluetooth", icon: Bluetooth },
   { href: "/senders", label: "Senders", icon: Radio },
   { href: "/whitelist", label: "Whitelist", icon: Shield },
   { href: "/classification", label: "Classification", icon: Tags },
