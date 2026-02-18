@@ -46,6 +46,9 @@ build_rtl_433_cmd() {
   local cmd=(rtl_433 -F json -M time:utc -M level -M protocol -M noise:60)
 
   # Multi-frequency hopping takes priority over single frequency
+  if [[ -n "${RTL_433_FREQS:-}" && -n "${RTL_433_FREQ:-}" ]]; then
+    log "WARNING: Both RTL_433_FREQS and RTL_433_FREQ are set; ignoring RTL_433_FREQ in favor of RTL_433_FREQS"
+  fi
   if [[ -n "${RTL_433_FREQS:-}" ]]; then
     local freq_count=0
     IFS=',' read -ra freqs <<< "$RTL_433_FREQS"
