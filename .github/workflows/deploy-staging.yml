@@ -85,10 +85,12 @@ jobs:
             "host=${{ secrets.DATABASE_HOST }} dbname=postgres user=${{ secrets.DATABASE_ADMIN_USER }} sslmode=require" \
             -c "CREATE DATABASE ${DB_NAME} OWNER signalsentry_app;"
 
-          # Grant privileges
+          # Grant privileges (PostgreSQL 15+ restricts public schema by default)
           PGPASSWORD="${{ secrets.DATABASE_ADMIN_PASSWORD }}" psql \
             "host=${{ secrets.DATABASE_HOST }} dbname=${DB_NAME} user=${{ secrets.DATABASE_ADMIN_USER }} sslmode=require" \
             -c "GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO signalsentry_app;
+                GRANT CREATE ON SCHEMA public TO signalsentry_app;
+                GRANT USAGE ON SCHEMA public TO signalsentry_app;
                 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO signalsentry_app;
                 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO signalsentry_app;"
         env:
