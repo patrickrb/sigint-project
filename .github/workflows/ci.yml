@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-test-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate --schema=src/shared/prisma/schema.prisma
+
+      - name: Build shared workspace
+        run: npm run build --workspace=src/shared
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Build API
+        run: npm run build --workspace=src/api
+
+      - name: Build Worker
+        run: npm run build --workspace=services/data-processor-worker
+
+      - name: Build Web
+        run: npm run build --workspace=src/web
+
+      - name: Verify Docker images build
+        run: |
+          docker build -f Dockerfile.api -t test-api .
+          docker build -f Dockerfile.worker -t test-worker .
+          docker build -f Dockerfile.web -t test-web .

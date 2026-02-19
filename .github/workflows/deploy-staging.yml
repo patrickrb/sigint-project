@@ -1,0 +1,279 @@
+name: Deploy Staging
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+
+concurrency:
+  group: staging-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  id-token: write
+  packages: write
+  pull-requests: write
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/signalsentry
+  PR_NUMBER: ${{ github.event.pull_request.number }}
+  SHA7: ${{ github.event.pull_request.head.sha && format('{0}', github.event.pull_request.head.sha) || github.sha }}
+  APPS_RG: rg-signalsentry-apps
+  ACA_ENV: signalsentry-staging
+  DB_NAME: signalsentry_staging_pr_${{ github.event.pull_request.number }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set short SHA
+        run: echo "TAG=pr-${PR_NUMBER}-${SHA7::7}" >> "$GITHUB_ENV"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Build & push API and Worker images ─────────────────────────────
+      - name: Build and push API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.api
+          push: true
+          tags: ${{ env.IMAGE_PREFIX }}-api:${{ env.TAG }}
+
+      - name: Build and push Worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.worker
+          push: true
+          tags: ${{ env.IMAGE_PREFIX }}-worker:${{ env.TAG }}
+
+      # ── Azure login ────────────────────────────────────────────────────
+      - name: Azure login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # ── Staging database ───────────────────────────────────────────────
+      - name: Setup staging database
+        run: |
+          # Derive deterministic staging secrets from PR number
+          STAGING_JWT=$(echo -n "jwt-${{ env.PR_NUMBER }}-${{ secrets.PROD_JWT_SECRET }}" | sha256sum | cut -c1-64)
+          STAGING_NEXTAUTH=$(echo -n "nextauth-${{ env.PR_NUMBER }}-${{ secrets.PROD_NEXTAUTH_SECRET }}" | sha256sum | cut -c1-64)
+          STAGING_ENCRYPTION=$(echo -n "enc-${{ env.PR_NUMBER }}-${{ secrets.PROD_TOKEN_ENCRYPTION_KEY }}" | sha256sum | cut -c1-64)
+
+          echo "STAGING_JWT_SECRET=$STAGING_JWT" >> "$GITHUB_ENV"
+          echo "STAGING_NEXTAUTH_SECRET=$STAGING_NEXTAUTH" >> "$GITHUB_ENV"
+          echo "STAGING_TOKEN_ENCRYPTION_KEY=$STAGING_ENCRYPTION" >> "$GITHUB_ENV"
+
+          # Create staging DB if not exists
+          PGPASSWORD="${{ secrets.DATABASE_ADMIN_PASSWORD }}" psql \
+            "host=${{ secrets.DATABASE_HOST }} dbname=postgres user=${{ secrets.DATABASE_ADMIN_USER }} sslmode=require" \
+            -tc "SELECT 1 FROM pg_database WHERE datname = '${DB_NAME}'" | grep -q 1 || \
+          PGPASSWORD="${{ secrets.DATABASE_ADMIN_PASSWORD }}" psql \
+            "host=${{ secrets.DATABASE_HOST }} dbname=postgres user=${{ secrets.DATABASE_ADMIN_USER }} sslmode=require" \
+            -c "CREATE DATABASE ${DB_NAME} OWNER signalsentry_app;"
+
+          # Grant privileges
+          PGPASSWORD="${{ secrets.DATABASE_ADMIN_PASSWORD }}" psql \
+            "host=${{ secrets.DATABASE_HOST }} dbname=${DB_NAME} user=${{ secrets.DATABASE_ADMIN_USER }} sslmode=require" \
+            -c "GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO signalsentry_app;
+                ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO signalsentry_app;
+                ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO signalsentry_app;"
+        env:
+          DB_NAME: ${{ env.DB_NAME }}
+
+      - name: Setup Node for Prisma
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Push schema and seed staging DB
+        run: |
+          npm ci
+          npx prisma generate --schema=src/shared/prisma/schema.prisma
+          npx prisma db push --schema=src/shared/prisma/schema.prisma --skip-generate
+          npm run db:seed
+        env:
+          DATABASE_URL: "postgresql://signalsentry_app:${{ secrets.DATABASE_APP_PASSWORD }}@${{ secrets.DATABASE_HOST }}:5432/${{ env.DB_NAME }}?sslmode=require"
+
+      # ── Deploy API container ───────────────────────────────────────────
+      - name: Deploy API container app
+        run: |
+          az containerapp create \
+            --name "staging-pr-${PR_NUMBER}-api" \
+            --resource-group "$APPS_RG" \
+            --environment "$ACA_ENV" \
+            --image "${{ env.IMAGE_PREFIX }}-api:${{ env.TAG }}" \
+            --registry-server "${{ env.REGISTRY }}" \
+            --registry-username "${{ github.repository_owner }}" \
+            --registry-password "${{ secrets.GHCR_PAT }}" \
+            --target-port 4000 \
+            --ingress external \
+            --cpu 0.25 --memory 0.5Gi \
+            --min-replicas 0 --max-replicas 1 \
+            --env-vars \
+              "DATABASE_URL=postgresql://signalsentry_app:${{ secrets.DATABASE_APP_PASSWORD }}@${{ secrets.DATABASE_HOST }}:5432/${DB_NAME}?sslmode=require" \
+              "JWT_SECRET=${STAGING_JWT_SECRET}" \
+              "TOKEN_ENCRYPTION_KEY=${STAGING_TOKEN_ENCRYPTION_KEY}" \
+              "CORS_ORIGIN=*" \
+              "API_PORT=4000" \
+              "API_HOST=0.0.0.0" \
+              "NODE_ENV=production" \
+            2>/dev/null || \
+          az containerapp update \
+            --name "staging-pr-${PR_NUMBER}-api" \
+            --resource-group "$APPS_RG" \
+            --image "${{ env.IMAGE_PREFIX }}-api:${{ env.TAG }}" \
+            --set-env-vars \
+              "DATABASE_URL=postgresql://signalsentry_app:${{ secrets.DATABASE_APP_PASSWORD }}@${{ secrets.DATABASE_HOST }}:5432/${DB_NAME}?sslmode=require" \
+              "JWT_SECRET=${STAGING_JWT_SECRET}" \
+              "TOKEN_ENCRYPTION_KEY=${STAGING_TOKEN_ENCRYPTION_KEY}" \
+              "CORS_ORIGIN=*"
+
+      - name: Get API FQDN
+        run: |
+          API_FQDN=$(az containerapp show \
+            --name "staging-pr-${PR_NUMBER}-api" \
+            --resource-group "$APPS_RG" \
+            --query "properties.configuration.ingress.fqdn" -o tsv)
+          echo "API_FQDN=$API_FQDN" >> "$GITHUB_ENV"
+          echo "API URL: https://$API_FQDN"
+
+      # ── Build & push Web image (needs API FQDN) ───────────────────────
+      - name: Build and push Web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.web
+          push: true
+          tags: ${{ env.IMAGE_PREFIX }}-web:${{ env.TAG }}
+          build-args: |
+            NEXT_PUBLIC_API_URL=https://${{ env.API_FQDN }}
+
+      # ── Deploy Web container ───────────────────────────────────────────
+      - name: Deploy Web container app
+        run: |
+          az containerapp create \
+            --name "staging-pr-${PR_NUMBER}-web" \
+            --resource-group "$APPS_RG" \
+            --environment "$ACA_ENV" \
+            --image "${{ env.IMAGE_PREFIX }}-web:${{ env.TAG }}" \
+            --registry-server "${{ env.REGISTRY }}" \
+            --registry-username "${{ github.repository_owner }}" \
+            --registry-password "${{ secrets.GHCR_PAT }}" \
+            --target-port 3000 \
+            --ingress external \
+            --cpu 0.25 --memory 0.5Gi \
+            --min-replicas 0 --max-replicas 1 \
+            --env-vars \
+              "API_URL=https://${API_FQDN}" \
+              "NEXTAUTH_SECRET=${STAGING_NEXTAUTH_SECRET}" \
+              "AUTH_TRUST_HOST=true" \
+              "NODE_ENV=production" \
+            2>/dev/null || \
+          az containerapp update \
+            --name "staging-pr-${PR_NUMBER}-web" \
+            --resource-group "$APPS_RG" \
+            --image "${{ env.IMAGE_PREFIX }}-web:${{ env.TAG }}" \
+            --set-env-vars \
+              "API_URL=https://${API_FQDN}" \
+              "NEXTAUTH_SECRET=${STAGING_NEXTAUTH_SECRET}" \
+              "AUTH_TRUST_HOST=true"
+
+      - name: Get Web FQDN and update NEXTAUTH_URL
+        run: |
+          WEB_FQDN=$(az containerapp show \
+            --name "staging-pr-${PR_NUMBER}-web" \
+            --resource-group "$APPS_RG" \
+            --query "properties.configuration.ingress.fqdn" -o tsv)
+          echo "WEB_FQDN=$WEB_FQDN" >> "$GITHUB_ENV"
+
+          az containerapp update \
+            --name "staging-pr-${PR_NUMBER}-web" \
+            --resource-group "$APPS_RG" \
+            --set-env-vars "NEXTAUTH_URL=https://${WEB_FQDN}"
+
+      # ── Deploy Worker container ────────────────────────────────────────
+      - name: Deploy Worker container app
+        run: |
+          az containerapp create \
+            --name "staging-pr-${PR_NUMBER}-worker" \
+            --resource-group "$APPS_RG" \
+            --environment "$ACA_ENV" \
+            --image "${{ env.IMAGE_PREFIX }}-worker:${{ env.TAG }}" \
+            --registry-server "${{ env.REGISTRY }}" \
+            --registry-username "${{ github.repository_owner }}" \
+            --registry-password "${{ secrets.GHCR_PAT }}" \
+            --cpu 0.25 --memory 0.5Gi \
+            --min-replicas 1 --max-replicas 1 \
+            --env-vars \
+              "DATABASE_URL=postgresql://signalsentry_app:${{ secrets.DATABASE_APP_PASSWORD }}@${{ secrets.DATABASE_HOST }}:5432/${DB_NAME}?sslmode=require" \
+              "WORKER_POLL_INTERVAL_MS=5000" \
+              "RETENTION_DAYS=1" \
+              "NODE_ENV=production" \
+            2>/dev/null || \
+          az containerapp update \
+            --name "staging-pr-${PR_NUMBER}-worker" \
+            --resource-group "$APPS_RG" \
+            --image "${{ env.IMAGE_PREFIX }}-worker:${{ env.TAG }}" \
+            --set-env-vars \
+              "DATABASE_URL=postgresql://signalsentry_app:${{ secrets.DATABASE_APP_PASSWORD }}@${{ secrets.DATABASE_HOST }}:5432/${DB_NAME}?sslmode=require"
+
+      # ── PR Comment ─────────────────────────────────────────────────────
+      - name: Comment on PR with staging URLs
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = [
+              '## Staging Environment Deployed',
+              '',
+              `| Service | URL |`,
+              `|---------|-----|`,
+              `| Web | https://${process.env.WEB_FQDN} |`,
+              `| API | https://${process.env.API_FQDN} |`,
+              `| API Health | https://${process.env.API_FQDN}/health |`,
+              '',
+              `**Image tag:** \`${process.env.TAG}\``,
+              `**Database:** \`${process.env.DB_NAME}\``,
+              '',
+              'Login: `admin@local` / `admin123`',
+            ].join('\n');
+
+            // Find and update existing deploy comment
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c =>
+              c.user.type === 'Bot' && c.body.includes('Staging Environment Deployed')
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
