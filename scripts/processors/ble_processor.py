@@ -165,11 +165,12 @@ def parse_ad_structures(payload: bytes) -> dict:
 
         # 0x02/0x03: Incomplete/Complete 16-bit UUID list
         elif ad_type in (0x02, 0x03):
-            uuids = []
-            for j in range(0, len(ad_data) - 1, 2):
-                uuid16 = struct.unpack("<H", ad_data[j:j + 2])[0]
-                uuids.append(f"{uuid16:04x}")
-            fields["serviceUuids"] = uuids
+            if len(ad_data) >= 2 and len(ad_data) % 2 == 0:
+                uuids = []
+                for j in range(0, len(ad_data), 2):
+                    uuid16 = struct.unpack("<H", ad_data[j:j + 2])[0]
+                    uuids.append(f"{uuid16:04x}")
+                fields["serviceUuids"] = uuids
 
         # 0xFF: Manufacturer Specific Data
         elif ad_type == 0xFF and len(ad_data) >= 2:
