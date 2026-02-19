@@ -20,6 +20,7 @@ import os
 import json
 import hashlib
 import math
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -34,6 +35,11 @@ MIN_STREAK = int(os.environ.get("SWEEP_MIN_STREAK", "2"))
 
 # EMA decay factor for post-baseline adaptive tracking
 EMA_ALPHA = 0.01
+
+# Stale bin cleanup: evict bins not updated in this many seconds
+STALE_BIN_SECONDS = 600
+# Run cleanup every N sweeps
+CLEANUP_INTERVAL = 50
 
 # Named frequency bands for grouping
 NAMED_BANDS = [
@@ -72,7 +78,8 @@ def freq_to_band_name(freq_hz: float) -> str:
 class BinStats:
     """Welford's online algorithm for running mean/variance, with EMA mode."""
 
-    __slots__ = ("count", "mean", "m2", "ema_mean", "ema_var", "learning")
+    __slots__ = ("count", "mean", "m2", "ema_mean", "ema_var", "learning",
+                 "last_seen")
 
     def __init__(self):
         self.count: int = 0
@@ -81,8 +88,10 @@ class BinStats:
         self.ema_mean: float = 0.0
         self.ema_var: float = 0.0
         self.learning: bool = True
+        self.last_seen: float = time.monotonic()
 
     def update(self, value: float):
+        self.last_seen = time.monotonic()
         if self.learning:
             self.count += 1
             delta = value - self.mean
@@ -186,12 +195,14 @@ class SweepProcessor:
                 sigma = stats.deviation_sigma(db)
                 self._check_anomaly(center_freq, db, sigma, stats)
 
-        # Track sweeps for baseline emission
+        # Track sweeps for baseline emission and periodic cleanup
         # A new "sweep" starts when we see hz_low near the beginning of the range
         if hz_low < 10e6:
             self.sweep_count += 1
             if not self.learning and self.sweep_count % EMIT_INTERVAL == 0:
                 self._emit_baseline_summary()
+            if not self.learning and self.sweep_count % CLEANUP_INTERVAL == 0:
+                self._cleanup_stale_bins()
 
     def _finalize_learning(self):
         """Transition all bins from learning to adaptive tracking."""
@@ -294,6 +305,19 @@ class SweepProcessor:
                 },
             }
             self._output(obs)
+
+    def _cleanup_stale_bins(self):
+        """Evict bins (and their streak/emitted state) not updated recently."""
+        cutoff = time.monotonic() - STALE_BIN_SECONDS
+        stale = [freq for freq, stats in self.bins.items()
+                 if stats.last_seen < cutoff]
+        for freq in stale:
+            del self.bins[freq]
+            self.streaks.pop(freq, None)
+            self.emitted.pop(freq, None)
+        if stale:
+            self._log(f"Cleaned {len(stale)} stale bins, "
+                      f"{len(self.bins)} remaining")
 
     def _output(self, obs: dict):
         """Write one NDJSON line to stdout."""
