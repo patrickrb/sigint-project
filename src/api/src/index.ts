@@ -26,6 +26,7 @@ import alertRoutes from "./routes/alerts";
 import eventRoutes from "./routes/events";
 import protocolRuleRoutes from "./routes/protocol-rules";
 import { seedProtocolRules } from "./services/seed-protocol-rules";
+import { seedAlertRules } from "./services/seed-alert-rules";
 
 const app = express();
 const server = createServer(app);
@@ -100,6 +101,7 @@ const PORT = parseInt(process.env.API_PORT || "4000", 10);
 server.listen(PORT, () => {
   logger.info({ port: PORT }, "RF Telemetry API server started");
   seedProtocolRules();
+  seedAlertRules();
 });
 
 export { app, server };

@@ -4,20 +4,24 @@ set -euo pipefail
 # setup-edge.sh — Install SDR/radio edge dependencies for rf-collector
 #
 # Detects the platform (macOS, Debian/Ubuntu/Pi OS, WSL) and installs
-# only what's missing: jq, curl, rtl_433, websocat (optional).
+# only what's missing: jq, curl, rtl_433, hackrf tools, python3, numpy,
+# websocat (optional).
 #
 # Usage:
-#   ./scripts/setup-edge.sh [--skip-optional]
+#   ./scripts/setup-edge.sh [--skip-optional] [--skip-hackrf]
 #
 # Options:
 #   --skip-optional   Skip optional dependencies (websocat)
+#   --skip-hackrf     Skip HackRF tools, Python, and numpy
 
 SKIP_OPTIONAL=false
+SKIP_HACKRF=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --skip-optional) SKIP_OPTIONAL=true; shift ;;
+    --skip-hackrf) SKIP_HACKRF=true; shift ;;
     --help|-h)
-      sed -n '3,10s/^# //p' "$0"
+      sed -n '3,12s/^# //p' "$0"
       exit 0
       ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
@@ -137,6 +141,39 @@ install_darwin() {
     brew install websocat && { ok "websocat installed"; INSTALLED+=("websocat"); } || { err "websocat install failed"; FAILED+=("websocat"); }
   fi
 
+  # HackRF tools (hackrf_transfer, hackrf_sweep)
+  if [[ "$SKIP_HACKRF" == "true" ]]; then
+    SKIPPED+=("hackrf")
+  elif has hackrf_transfer && has hackrf_sweep; then
+    skip "hackrf"; ALREADY+=("hackrf")
+  else
+    log "Installing hackrf tools..."
+    brew install hackrf && { ok "hackrf installed"; INSTALLED+=("hackrf"); } \
+      || { err "hackrf install failed"; FAILED+=("hackrf"); }
+  fi
+
+  # Python 3 (needed for HackRF BLE/sweep processors)
+  if [[ "$SKIP_HACKRF" == "true" ]]; then
+    SKIPPED+=("python3")
+  elif has python3; then
+    skip "python3"; ALREADY+=("python3")
+  else
+    log "Installing python3..."
+    brew install python@3 && { ok "python3 installed"; INSTALLED+=("python3"); } \
+      || { err "python3 install failed"; FAILED+=("python3"); }
+  fi
+
+  # numpy (for Python processors)
+  if [[ "$SKIP_HACKRF" == "true" ]]; then
+    SKIPPED+=("numpy")
+  elif python3 -c "import numpy" 2>/dev/null; then
+    skip "numpy"; ALREADY+=("numpy")
+  else
+    log "Installing numpy..."
+    pip3 install "numpy>=1.24.0" && { ok "numpy installed"; INSTALLED+=("numpy"); } \
+      || { err "numpy install failed"; FAILED+=("numpy"); }
+  fi
+
   # bash version check
   if ! check_bash_version; then
     if ! brew list bash &>/dev/null; then
@@ -224,6 +261,51 @@ install_debian() {
     skip "websocat"; ALREADY+=("websocat")
   else
     install_websocat_binary
+  fi
+
+  # HackRF tools
+  if [[ "$SKIP_HACKRF" == "true" ]]; then
+    SKIPPED+=("hackrf")
+  elif has hackrf_transfer && has hackrf_sweep; then
+    skip "hackrf"; ALREADY+=("hackrf")
+  else
+    apt_update
+    log "Installing hackrf tools..."
+    sudo apt-get install -y -qq hackrf libhackrf-dev \
+      && { ok "hackrf installed"; INSTALLED+=("hackrf"); } \
+      || { err "hackrf install failed"; FAILED+=("hackrf"); }
+  fi
+
+  # Python 3 + pip (needed for HackRF BLE/sweep processors)
+  if [[ "$SKIP_HACKRF" == "true" ]]; then
+    SKIPPED+=("python3")
+  elif has python3; then
+    skip "python3"; ALREADY+=("python3")
+  else
+    apt_update
+    log "Installing python3..."
+    sudo apt-get install -y -qq python3 python3-pip python3-venv \
+      && { ok "python3 installed"; INSTALLED+=("python3"); } \
+      || { err "python3 install failed"; FAILED+=("python3"); }
+  fi
+
+  # numpy
+  if [[ "$SKIP_HACKRF" == "true" ]]; then
+    SKIPPED+=("numpy")
+  elif python3 -c "import numpy" 2>/dev/null; then
+    skip "numpy"; ALREADY+=("numpy")
+  else
+    log "Installing numpy..."
+    pip3 install --user "numpy>=1.24.0" \
+      && { ok "numpy installed"; INSTALLED+=("numpy"); } \
+      || { err "numpy install failed"; FAILED+=("numpy"); }
+  fi
+
+  # Linux udev rules reminder for HackRF
+  if [[ "$SKIP_HACKRF" != "true" ]]; then
+    warn "If HackRF is not detected, install udev rules:"
+    warn "  sudo cp /path/to/hackrf/host/contrib/52-hackrf.rules /etc/udev/rules.d/"
+    warn "  sudo udevadm control --reload-rules && sudo udevadm trigger"
   fi
 
   # bash version check
@@ -355,7 +437,15 @@ print_summary() {
 
   echo ""
   ok "Edge host is ready. Run rf-collector with:"
+  echo ""
+  echo "  # RTL-SDR"
   echo "  SENDER_TOKEN=xxx ./scripts/rf-collector.sh --freq 315M --protocol tpms"
+  echo ""
+  echo "  # HackRF wideband sweep"
+  echo "  SENDER_TOKEN=xxx ./scripts/rf-collector.sh --adapter hackrf_sweep"
+  echo ""
+  echo "  # HackRF BLE capture"
+  echo "  SENDER_TOKEN=xxx ./scripts/rf-collector.sh --adapter hackrf_ble"
   echo ""
 }
 

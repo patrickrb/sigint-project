@@ -219,14 +219,36 @@ router.get("/api/observations/timeline", authenticateUser, async (req: Request, 
   try {
     const minutes = Math.min(parseInt(req.query.minutes as string) || 60, 1440);
     const since = new Date(Date.now() - minutes * 60 * 1000);
+    const protocol = typeof req.query.protocol === "string" ? req.query.protocol : undefined;
+    const protocolPrefix = typeof req.query.protocolPrefix === "string" ? req.query.protocolPrefix : undefined;
+    const likePattern = protocolPrefix ? `${protocolPrefix}%` : undefined;
 
-    const rows = await prisma.$queryRaw<Array<{ bucket: Date; count: bigint }>>`
-      SELECT date_trunc('minute', "receivedAt") AS bucket, COUNT(*)::bigint AS count
-      FROM observations
-      WHERE "receivedAt" >= ${since}
-      GROUP BY bucket
-      ORDER BY bucket ASC
-    `;
+    let rows: Array<{ bucket: Date; count: bigint }>;
+    if (protocol) {
+      rows = await prisma.$queryRaw`
+        SELECT date_trunc('minute', "receivedAt") AS bucket, COUNT(*)::bigint AS count
+        FROM observations
+        WHERE "receivedAt" >= ${since} AND protocol = ${protocol}
+        GROUP BY bucket
+        ORDER BY bucket ASC
+      `;
+    } else if (likePattern) {
+      rows = await prisma.$queryRaw`
+        SELECT date_trunc('minute', "receivedAt") AS bucket, COUNT(*)::bigint AS count
+        FROM observations
+        WHERE "receivedAt" >= ${since} AND protocol LIKE ${likePattern}
+        GROUP BY bucket
+        ORDER BY bucket ASC
+      `;
+    } else {
+      rows = await prisma.$queryRaw`
+        SELECT date_trunc('minute', "receivedAt") AS bucket, COUNT(*)::bigint AS count
+        FROM observations
+        WHERE "receivedAt" >= ${since}
+        GROUP BY bucket
+        ORDER BY bucket ASC
+      `;
+    }
 
     const timeline = rows.map((r) => ({
       time: r.bucket.toISOString(),
@@ -289,6 +311,159 @@ router.get("/api/observations/classification-timeline", authenticateUser, async 
     }
 
     res.json({ timeline: Array.from(map.values()) });
+  } catch (err) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Spectrum heatmap: frequency × time × power for spectrum-* protocols
+router.get("/api/observations/spectrum-heatmap", authenticateUser, async (req: Request, res: Response) => {
+  try {
+    const minutes = Math.min(parseInt(req.query.minutes as string) || 60, 1440);
+    const since = new Date(Date.now() - minutes * 60 * 1000);
+
+    const rows = await prisma.$queryRaw<Array<{
+      bucket: Date;
+      frequency_hz: bigint;
+      avg_power: number;
+      max_power: number;
+      count: bigint;
+    }>>`
+      SELECT
+        date_trunc('minute', "receivedAt") AS bucket,
+        "frequencyHz" AS frequency_hz,
+        AVG(rssi)::float AS avg_power,
+        MAX(rssi)::float AS max_power,
+        COUNT(*)::bigint AS count
+      FROM observations
+      WHERE "receivedAt" >= ${since}
+        AND protocol LIKE 'spectrum-%'
+        AND "frequencyHz" IS NOT NULL
+      GROUP BY bucket, "frequencyHz"
+      ORDER BY bucket ASC, frequency_hz ASC
+    `;
+
+    const heatmap = rows.map((r) => ({
+      time: r.bucket.toISOString(),
+      frequencyHz: r.frequency_hz.toString(),
+      avgPower: Math.round(r.avg_power * 10) / 10,
+      maxPower: Math.round(r.max_power * 10) / 10,
+      count: Number(r.count),
+    }));
+
+    res.json({ heatmap });
+  } catch (err) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Spectrum band summaries: power per named frequency band
+router.get("/api/observations/spectrum-bands", authenticateUser, async (req: Request, res: Response) => {
+  try {
+    const minutes = Math.min(parseInt(req.query.minutes as string) || 60, 1440);
+    const since = new Date(Date.now() - minutes * 60 * 1000);
+
+    const rows = await prisma.$queryRaw<Array<{
+      band: string;
+      avg_power: number;
+      min_power: number;
+      max_power: number;
+      count: bigint;
+    }>>`
+      SELECT
+        fields->>'band' AS band,
+        AVG(rssi)::float AS avg_power,
+        MIN(rssi)::float AS min_power,
+        MAX(rssi)::float AS max_power,
+        COUNT(*)::bigint AS count
+      FROM observations
+      WHERE "receivedAt" >= ${since}
+        AND protocol = 'spectrum-baseline'
+        AND fields->>'band' IS NOT NULL
+      GROUP BY band
+      ORDER BY avg_power DESC
+    `;
+
+    const bands = rows.map((r) => ({
+      band: r.band,
+      avgPower: Math.round(r.avg_power * 10) / 10,
+      minPower: Math.round(r.min_power * 10) / 10,
+      maxPower: Math.round(r.max_power * 10) / 10,
+      count: Number(r.count),
+    }));
+
+    res.json({ bands });
+  } catch (err) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// BLE devices: unique BLE devices seen recently
+router.get("/api/observations/ble-devices", authenticateUser, async (req: Request, res: Response) => {
+  try {
+    const minutes = Math.min(parseInt(req.query.minutes as string) || 60, 1440);
+    const since = new Date(Date.now() - minutes * 60 * 1000);
+
+    // Single query: aggregate stats joined with latest fields via DISTINCT ON
+    const rows = await prisma.$queryRaw<Array<{
+      signature: string;
+      protocol: string;
+      classification: string;
+      avg_rssi: number;
+      count: bigint;
+      first_seen: Date;
+      last_seen: Date;
+      frequency_hz: bigint | null;
+      fields: unknown;
+    }>>`
+      SELECT
+        agg.signature,
+        agg.protocol,
+        agg.classification,
+        agg.avg_rssi,
+        agg.count,
+        agg.first_seen,
+        agg.last_seen,
+        latest."frequencyHz" AS frequency_hz,
+        latest.fields
+      FROM (
+        SELECT
+          signature,
+          protocol,
+          classification,
+          AVG(rssi)::float AS avg_rssi,
+          COUNT(*)::bigint AS count,
+          MIN("receivedAt") AS first_seen,
+          MAX("receivedAt") AS last_seen
+        FROM observations
+        WHERE "receivedAt" >= ${since}
+          AND protocol LIKE 'ble-%'
+        GROUP BY signature, protocol, classification
+        ORDER BY last_seen DESC
+        LIMIT 200
+      ) agg
+      LEFT JOIN LATERAL (
+        SELECT "frequencyHz", fields
+        FROM observations
+        WHERE signature = agg.signature
+        ORDER BY "receivedAt" DESC
+        LIMIT 1
+      ) latest ON true
+    `;
+
+    const devices = rows.map((r) => ({
+      signature: r.signature,
+      protocol: r.protocol,
+      classification: r.classification,
+      avgRssi: Math.round(r.avg_rssi * 10) / 10,
+      count: Number(r.count),
+      firstSeen: r.first_seen.toISOString(),
+      lastSeen: r.last_seen.toISOString(),
+      frequencyHz: r.frequency_hz?.toString() ?? null,
+      fields: r.fields ?? {},
+    }));
+
+    res.json({ devices });
   } catch (err) {
     res.status(500).json({ error: "Internal server error" });
   }

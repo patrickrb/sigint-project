@@ -52,6 +52,10 @@ export function protocolColor(protocol: string): string {
     "Nexus-TH": "bg-violet-500/15 text-violet-400 border-violet-500/25",
     "LaCrosse-TX": "bg-amber-500/15 text-amber-400 border-amber-500/25",
     "Ambient-Weather": "bg-cyan-500/15 text-cyan-400 border-cyan-500/25",
+    "ble-adv": "bg-blue-500/15 text-blue-400 border-blue-500/25",
+    "ble-energy": "bg-sky-500/15 text-sky-400 border-sky-500/25",
+    "spectrum-anomaly": "bg-rose-500/15 text-rose-400 border-rose-500/25",
+    "spectrum-baseline": "bg-purple-500/15 text-purple-400 border-purple-500/25",
   };
   return colors[protocol] || "bg-primary/10 text-primary border-primary/20";
 }
