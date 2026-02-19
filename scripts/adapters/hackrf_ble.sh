@@ -46,6 +46,16 @@ check_deps() {
 # --- Main ---
 check_deps
 
+# When multiple HackRFs are connected, hackrf_transfer requires a serial number
+if [[ -z "${HACKRF_SERIAL:-}" ]]; then
+  local_count=$(hackrf_info 2>/dev/null | grep -c "Serial number:" || true)
+  if [[ "$local_count" -gt 1 ]]; then
+    log "ERROR: Multiple HackRF devices detected but HACKRF_SERIAL not set."
+    log "Run 'hackrf_info' to list serials, then set HACKRF_SERIAL or use --hackrf-serial."
+    exit 1
+  fi
+fi
+
 PROCESSOR="${SCRIPT_DIR}/../processors/ble_processor.py"
 
 log "HackRF BLE adapter starting"
