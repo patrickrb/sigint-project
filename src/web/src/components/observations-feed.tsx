@@ -51,19 +51,20 @@ function formatFieldValue(key: string, value: unknown): string {
   if (k.includes("pressure") && k.includes("hpa") && typeof value === "number") return `${value} hPa`;
   if (k.includes("rain") && k.includes("mm") && typeof value === "number") return `${value} mm`;
   if (k === "battery_ok") return value ? "OK" : "Low";
-  if (k === "machash" && typeof value === "string") return `${value.slice(0, 12)}...`;
-  if (k === "channel" && typeof value === "number") return `Ch ${value}`;
-  if (k === "txpower" && typeof value === "number") return `${value} dBm`;
-  if (k === "deviationsigma" && typeof value === "number") return `${value}σ`;
-  if (k === "burstcount" && typeof value === "number") return `${value} bursts`;
-  if (k === "dwellms" && typeof value === "number") return `${value} ms`;
-  if (k === "binwidthhz" && typeof value === "number") return `${(value / 1e6).toFixed(1)} MHz`;
-  if (k === "baselinepower" && typeof value === "number") return `${value} dBm`;
-  if (k === "measuredpower" && typeof value === "number") return `${value} dBm`;
-  if (k === "meanpower" && typeof value === "number") return `${value} dBm`;
-  if (k === "minpower" && typeof value === "number") return `${value} dBm`;
-  if (k === "maxpower" && typeof value === "number") return `${value} dBm`;
-  if (k === "peakpower" && typeof value === "number") return `${value} dBm`;
+  // BLE/spectrum fields — match actual camelCase keys from the data
+  if (key === "macHash" && typeof value === "string") return `${value.slice(0, 12)}...`;
+  if (key === "channel" && typeof value === "number") return `Ch ${value}`;
+  if (key === "txPower" && typeof value === "number") return `${value} dBm`;
+  if (key === "deviationSigma" && typeof value === "number") return `${value}σ`;
+  if (key === "burstCount" && typeof value === "number") return `${value} bursts`;
+  if (key === "dwellMs" && typeof value === "number") return `${value} ms`;
+  if (key === "binWidthHz" && typeof value === "number") return `${(value / 1e6).toFixed(1)} MHz`;
+  if (key === "baselinePower" && typeof value === "number") return `${value} dBm`;
+  if (key === "measuredPower" && typeof value === "number") return `${value} dBm`;
+  if (key === "meanPower" && typeof value === "number") return `${value} dBm`;
+  if (key === "minPower" && typeof value === "number") return `${value} dBm`;
+  if (key === "maxPower" && typeof value === "number") return `${value} dBm`;
+  if (key === "peakPower" && typeof value === "number") return `${value} dBm`;
   if (typeof value === "boolean") return value ? "Yes" : "No";
   return String(value);
 }
