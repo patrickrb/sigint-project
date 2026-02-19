@@ -63,8 +63,7 @@ export function BleActivityTimeline() {
   const fetchData = useCallback(async () => {
     if (!token) return;
     try {
-      // Fetch timeline filtered to BLE protocols
-      const res = await fetch(`${apiUrl}/api/observations/timeline?minutes=60`, {
+      const res = await fetch(`${apiUrl}/api/observations/timeline?minutes=60&protocolPrefix=ble-`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.ok) {

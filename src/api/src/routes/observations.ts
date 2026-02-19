@@ -220,22 +220,35 @@ router.get("/api/observations/timeline", authenticateUser, async (req: Request, 
     const minutes = Math.min(parseInt(req.query.minutes as string) || 60, 1440);
     const since = new Date(Date.now() - minutes * 60 * 1000);
     const protocol = typeof req.query.protocol === "string" ? req.query.protocol : undefined;
+    const protocolPrefix = typeof req.query.protocolPrefix === "string" ? req.query.protocolPrefix : undefined;
+    const likePattern = protocolPrefix ? `${protocolPrefix}%` : undefined;
 
-    const rows = protocol
-      ? await prisma.$queryRaw<Array<{ bucket: Date; count: bigint }>>`
-          SELECT date_trunc('minute', "receivedAt") AS bucket, COUNT(*)::bigint AS count
-          FROM observations
-          WHERE "receivedAt" >= ${since} AND protocol = ${protocol}
-          GROUP BY bucket
-          ORDER BY bucket ASC
-        `
-      : await prisma.$queryRaw<Array<{ bucket: Date; count: bigint }>>`
-          SELECT date_trunc('minute', "receivedAt") AS bucket, COUNT(*)::bigint AS count
-          FROM observations
-          WHERE "receivedAt" >= ${since}
-          GROUP BY bucket
-          ORDER BY bucket ASC
-        `;
+    let rows: Array<{ bucket: Date; count: bigint }>;
+    if (protocol) {
+      rows = await prisma.$queryRaw`
+        SELECT date_trunc('minute', "receivedAt") AS bucket, COUNT(*)::bigint AS count
+        FROM observations
+        WHERE "receivedAt" >= ${since} AND protocol = ${protocol}
+        GROUP BY bucket
+        ORDER BY bucket ASC
+      `;
+    } else if (likePattern) {
+      rows = await prisma.$queryRaw`
+        SELECT date_trunc('minute', "receivedAt") AS bucket, COUNT(*)::bigint AS count
+        FROM observations
+        WHERE "receivedAt" >= ${since} AND protocol LIKE ${likePattern}
+        GROUP BY bucket
+        ORDER BY bucket ASC
+      `;
+    } else {
+      rows = await prisma.$queryRaw`
+        SELECT date_trunc('minute', "receivedAt") AS bucket, COUNT(*)::bigint AS count
+        FROM observations
+        WHERE "receivedAt" >= ${since}
+        GROUP BY bucket
+        ORDER BY bucket ASC
+      `;
+    }
 
     const timeline = rows.map((r) => ({
       time: r.bucket.toISOString(),
