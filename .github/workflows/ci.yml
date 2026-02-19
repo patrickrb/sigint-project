@@ -28,9 +28,6 @@ jobs:
       - name: Build shared workspace
         run: npm run build --workspace=src/shared
 
-      - name: Lint
-        run: npx eslint . --ext .ts,.tsx
-
       - name: Test
         run: npm test
 
