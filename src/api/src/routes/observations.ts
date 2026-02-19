@@ -404,6 +404,7 @@ router.get("/api/observations/ble-devices", authenticateUser, async (req: Reques
     const minutes = Math.min(parseInt(req.query.minutes as string) || 60, 1440);
     const since = new Date(Date.now() - minutes * 60 * 1000);
 
+    // Single query: aggregate stats joined with latest fields via DISTINCT ON
     const rows = await prisma.$queryRaw<Array<{
       signature: string;
       protocol: string;
@@ -412,44 +413,55 @@ router.get("/api/observations/ble-devices", authenticateUser, async (req: Reques
       count: bigint;
       first_seen: Date;
       last_seen: Date;
+      frequency_hz: bigint | null;
+      fields: unknown;
     }>>`
       SELECT
-        signature,
-        protocol,
-        classification,
-        AVG(rssi)::float AS avg_rssi,
-        COUNT(*)::bigint AS count,
-        MIN("receivedAt") AS first_seen,
-        MAX("receivedAt") AS last_seen
-      FROM observations
-      WHERE "receivedAt" >= ${since}
-        AND protocol LIKE 'ble-%'
-      GROUP BY signature, protocol, classification
-      ORDER BY last_seen DESC
-      LIMIT 200
+        agg.signature,
+        agg.protocol,
+        agg.classification,
+        agg.avg_rssi,
+        agg.count,
+        agg.first_seen,
+        agg.last_seen,
+        latest."frequencyHz" AS frequency_hz,
+        latest.fields
+      FROM (
+        SELECT
+          signature,
+          protocol,
+          classification,
+          AVG(rssi)::float AS avg_rssi,
+          COUNT(*)::bigint AS count,
+          MIN("receivedAt") AS first_seen,
+          MAX("receivedAt") AS last_seen
+        FROM observations
+        WHERE "receivedAt" >= ${since}
+          AND protocol LIKE 'ble-%'
+        GROUP BY signature, protocol, classification
+        ORDER BY last_seen DESC
+        LIMIT 200
+      ) agg
+      LEFT JOIN LATERAL (
+        SELECT "frequencyHz", fields
+        FROM observations
+        WHERE signature = agg.signature
+        ORDER BY "receivedAt" DESC
+        LIMIT 1
+      ) latest ON true
     `;
 
-    // Get latest fields for each device
-    const devices = await Promise.all(
-      rows.map(async (r) => {
-        const latest = await prisma.observation.findFirst({
-          where: { signature: r.signature },
-          orderBy: { receivedAt: "desc" },
-          select: { fields: true, frequencyHz: true },
-        });
-        return {
-          signature: r.signature,
-          protocol: r.protocol,
-          classification: r.classification,
-          avgRssi: Math.round(r.avg_rssi * 10) / 10,
-          count: Number(r.count),
-          firstSeen: r.first_seen.toISOString(),
-          lastSeen: r.last_seen.toISOString(),
-          frequencyHz: latest?.frequencyHz?.toString() ?? null,
-          fields: latest?.fields ?? {},
-        };
-      })
-    );
+    const devices = rows.map((r) => ({
+      signature: r.signature,
+      protocol: r.protocol,
+      classification: r.classification,
+      avgRssi: Math.round(r.avg_rssi * 10) / 10,
+      count: Number(r.count),
+      firstSeen: r.first_seen.toISOString(),
+      lastSeen: r.last_seen.toISOString(),
+      frequencyHz: r.frequency_hz?.toString() ?? null,
+      fields: r.fields ?? {},
+    }));
 
     res.json({ devices });
   } catch (err) {
