@@ -1,0 +1,210 @@
+name: Deploy Production
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  packages: write
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/signalsentry
+  APPS_RG: rg-signalsentry-apps
+  ACA_ENV: signalsentry-prod
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set image tag
+        run: echo "TAG=main-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Build & push all images ────────────────────────────────────────
+      - name: Build and push API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.api
+          push: true
+          tags: |
+            ${{ env.IMAGE_PREFIX }}-api:${{ env.TAG }}
+            ${{ env.IMAGE_PREFIX }}-api:latest
+
+      - name: Build and push Worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.worker
+          push: true
+          tags: |
+            ${{ env.IMAGE_PREFIX }}-worker:${{ env.TAG }}
+            ${{ env.IMAGE_PREFIX }}-worker:latest
+
+      - name: Build and push Web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.web
+          push: true
+          tags: |
+            ${{ env.IMAGE_PREFIX }}-web:${{ env.TAG }}
+            ${{ env.IMAGE_PREFIX }}-web:latest
+          build-args: |
+            NEXT_PUBLIC_API_URL=https://api.signalsentry.io
+
+      # ── Azure login ────────────────────────────────────────────────────
+      - name: Azure login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # ── Database migration ─────────────────────────────────────────────
+      - name: Setup Node for Prisma
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Run Prisma db push
+        run: |
+          npm ci
+          npx prisma generate --schema=src/shared/prisma/schema.prisma
+          npx prisma db push --schema=src/shared/prisma/schema.prisma --skip-generate
+        env:
+          DATABASE_URL: "postgresql://signalsentry_app:${{ secrets.DATABASE_APP_PASSWORD }}@${{ secrets.DATABASE_HOST }}:5432/signalsentry_prod?sslmode=require"
+
+      # ── Deploy API ─────────────────────────────────────────────────────
+      - name: Deploy API container app
+        run: |
+          az containerapp create \
+            --name signalsentry-prod-api \
+            --resource-group "$APPS_RG" \
+            --environment "$ACA_ENV" \
+            --image "${{ env.IMAGE_PREFIX }}-api:${{ env.TAG }}" \
+            --registry-server "${{ env.REGISTRY }}" \
+            --registry-username "${{ github.repository_owner }}" \
+            --registry-password "${{ secrets.GHCR_PAT }}" \
+            --target-port 4000 \
+            --ingress external \
+            --cpu 0.5 --memory 1Gi \
+            --min-replicas 1 --max-replicas 3 \
+            --scale-rule-name http-scaling \
+            --scale-rule-type http \
+            --scale-rule-http-concurrency 50 \
+            --env-vars \
+              "DATABASE_URL=postgresql://signalsentry_app:${{ secrets.DATABASE_APP_PASSWORD }}@${{ secrets.DATABASE_HOST }}:5432/signalsentry_prod?sslmode=require" \
+              "JWT_SECRET=${{ secrets.PROD_JWT_SECRET }}" \
+              "TOKEN_ENCRYPTION_KEY=${{ secrets.PROD_TOKEN_ENCRYPTION_KEY }}" \
+              "CORS_ORIGIN=https://signalsentry.io" \
+              "API_PORT=4000" \
+              "API_HOST=0.0.0.0" \
+              "NODE_ENV=production" \
+            2>/dev/null || \
+          az containerapp update \
+            --name signalsentry-prod-api \
+            --resource-group "$APPS_RG" \
+            --image "${{ env.IMAGE_PREFIX }}-api:${{ env.TAG }}" \
+            --set-env-vars \
+              "DATABASE_URL=postgresql://signalsentry_app:${{ secrets.DATABASE_APP_PASSWORD }}@${{ secrets.DATABASE_HOST }}:5432/signalsentry_prod?sslmode=require" \
+              "JWT_SECRET=${{ secrets.PROD_JWT_SECRET }}" \
+              "TOKEN_ENCRYPTION_KEY=${{ secrets.PROD_TOKEN_ENCRYPTION_KEY }}" \
+              "CORS_ORIGIN=https://signalsentry.io"
+
+      # ── Deploy Web ─────────────────────────────────────────────────────
+      - name: Deploy Web container app
+        run: |
+          az containerapp create \
+            --name signalsentry-prod-web \
+            --resource-group "$APPS_RG" \
+            --environment "$ACA_ENV" \
+            --image "${{ env.IMAGE_PREFIX }}-web:${{ env.TAG }}" \
+            --registry-server "${{ env.REGISTRY }}" \
+            --registry-username "${{ github.repository_owner }}" \
+            --registry-password "${{ secrets.GHCR_PAT }}" \
+            --target-port 3000 \
+            --ingress external \
+            --cpu 0.5 --memory 1Gi \
+            --min-replicas 1 --max-replicas 2 \
+            --env-vars \
+              "API_URL=https://api.signalsentry.io" \
+              "NEXTAUTH_URL=https://signalsentry.io" \
+              "NEXTAUTH_SECRET=${{ secrets.PROD_NEXTAUTH_SECRET }}" \
+              "AUTH_TRUST_HOST=true" \
+              "NODE_ENV=production" \
+            2>/dev/null || \
+          az containerapp update \
+            --name signalsentry-prod-web \
+            --resource-group "$APPS_RG" \
+            --image "${{ env.IMAGE_PREFIX }}-web:${{ env.TAG }}" \
+            --set-env-vars \
+              "API_URL=https://api.signalsentry.io" \
+              "NEXTAUTH_URL=https://signalsentry.io" \
+              "NEXTAUTH_SECRET=${{ secrets.PROD_NEXTAUTH_SECRET }}" \
+              "AUTH_TRUST_HOST=true"
+
+      # ── Deploy Worker ──────────────────────────────────────────────────
+      - name: Deploy Worker container app
+        run: |
+          az containerapp create \
+            --name signalsentry-prod-worker \
+            --resource-group "$APPS_RG" \
+            --environment "$ACA_ENV" \
+            --image "${{ env.IMAGE_PREFIX }}-worker:${{ env.TAG }}" \
+            --registry-server "${{ env.REGISTRY }}" \
+            --registry-username "${{ github.repository_owner }}" \
+            --registry-password "${{ secrets.GHCR_PAT }}" \
+            --cpu 0.25 --memory 0.5Gi \
+            --min-replicas 1 --max-replicas 1 \
+            --env-vars \
+              "DATABASE_URL=postgresql://signalsentry_app:${{ secrets.DATABASE_APP_PASSWORD }}@${{ secrets.DATABASE_HOST }}:5432/signalsentry_prod?sslmode=require" \
+              "WORKER_POLL_INTERVAL_MS=2000" \
+              "RETENTION_DAYS=7" \
+              "NODE_ENV=production" \
+            2>/dev/null || \
+          az containerapp update \
+            --name signalsentry-prod-worker \
+            --resource-group "$APPS_RG" \
+            --image "${{ env.IMAGE_PREFIX }}-worker:${{ env.TAG }}" \
+            --set-env-vars \
+              "DATABASE_URL=postgresql://signalsentry_app:${{ secrets.DATABASE_APP_PASSWORD }}@${{ secrets.DATABASE_HOST }}:5432/signalsentry_prod?sslmode=require" \
+              "WORKER_POLL_INTERVAL_MS=2000" \
+              "RETENTION_DAYS=7"
+
+      # ── Health check ───────────────────────────────────────────────────
+      - name: Health check
+        run: |
+          API_FQDN=$(az containerapp show \
+            --name signalsentry-prod-api \
+            --resource-group "$APPS_RG" \
+            --query "properties.configuration.ingress.fqdn" -o tsv)
+
+          echo "Checking health at https://$API_FQDN/health..."
+          for i in $(seq 1 24); do
+            if curl -sf "https://$API_FQDN/health" > /dev/null 2>&1; then
+              echo "Health check passed on attempt $i"
+              exit 0
+            fi
+            echo "Attempt $i/24 failed, retrying in 5s..."
+            sleep 5
+          done
+          echo "Health check failed after 2 minutes"
+          exit 1

@@ -281,13 +281,13 @@ export default function BluetoothPage() {
                               <span className="font-mono font-medium">{String(fields.txPower)} dBm</span>
                             </div>
                           )}
-                          {fields?.manufacturerId && (
+                          {fields?.manufacturerId != null && (
                             <div className="flex items-baseline gap-2 text-xs">
                               <span className="text-muted-foreground">Company ID</span>
                               <span className="font-mono font-medium">0x{String(fields.manufacturerId)}</span>
                             </div>
                           )}
-                          {fields?.serviceUuids && (
+                          {fields?.serviceUuids != null && (
                             <div className="flex items-baseline gap-2 text-xs">
                               <span className="text-muted-foreground">Services</span>
                               <span className="font-mono font-medium">

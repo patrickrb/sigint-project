@@ -211,3 +211,98 @@ Python processors (`scripts/processors/`):
 
 - Admin: `admin@local` / `admin123`
 - Sender tokens: `sender-token-alpha-00000000`, `sender-token-bravo-00000000`
+
+## Deployment
+
+### Infrastructure
+
+Deployed to **Azure Container Apps** (Consumption plan) with:
+- **Container registry**: GHCR (`ghcr.io/patrickrb/signalsentry-{api,web,worker}`)
+- **Azure auth**: OIDC federated credentials (no long-lived secrets)
+- **Database**: Azure PostgreSQL Flexible Server (`primary-burns-db` in RG `burnsforce`)
+- **DNS**: Azure DNS zone `signalsentry.io` in RG `signal-sentry`
+- **ACA resources**: RG `rg-signalsentry-apps` in Central US
+
+### Environments
+
+| | Production | Staging (per PR) |
+|---|---|---|
+| **Web** | `signalsentry.io` (0.5 vCPU, 1Gi, 1-2 replicas) | `{auto}.azurecontainerapps.io` (0.25 vCPU, 0.5Gi, 0-1) |
+| **API** | `api.signalsentry.io` (0.5 vCPU, 1Gi, 1-3, HTTP autoscale) | `{auto}.azurecontainerapps.io` (0.25 vCPU, 0.5Gi, 0-1) |
+| **Worker** | No ingress (0.25 vCPU, 0.5Gi, 1 replica) | No ingress (0.25 vCPU, 0.5Gi, 1 replica) |
+| **Database** | `signalsentry_prod` | `signalsentry_staging_pr_{N}` (ephemeral) |
+| **ACA env** | `signalsentry-prod` | `signalsentry-staging` |
+
+### Workflows
+
+| Workflow | Trigger | Purpose |
+|----------|---------|---------|
+| `ci.yml` | PR to main | Lint, test, build verification, Docker image build check |
+| `deploy-staging.yml` | PR opened/synced to main | Build images, create staging DB, deploy 3 ACA apps, comment URLs on PR |
+| `teardown-staging.yml` | PR closed | Delete ACA apps, drop staging DB, clean GHCR images |
+| `deploy-production.yml` | Push to main | Build images, push schema, deploy 3 ACA apps, health check |
+
+### Image Tags
+
+- **Staging**: `pr-{N}-{sha7}` (e.g., `pr-42-a1b2c3d`)
+- **Production**: `main-{sha7}` + `latest`
+
+### NEXT_PUBLIC_API_URL
+
+Next.js inlines `NEXT_PUBLIC_*` env vars at build time. The `Dockerfile.web` accepts a build arg:
+
+```dockerfile
+ARG NEXT_PUBLIC_API_URL=http://localhost:4000
+```
+
+- **Production**: `https://api.signalsentry.io`
+- **Staging**: `https://{api-fqdn}` (determined at deploy time, API deploys before web image is built)
+- **Local/Docker Compose**: `http://localhost:4000` (default)
+
+### GitHub Secrets
+
+| Secret | Purpose |
+|--------|---------|
+| `AZURE_CLIENT_ID` | OIDC — AD app registration client ID |
+| `AZURE_TENANT_ID` | OIDC — Azure AD tenant ID |
+| `AZURE_SUBSCRIPTION_ID` | OIDC — subscription ID |
+| `DATABASE_HOST` | `primary-burns-db.postgres.database.azure.com` |
+| `DATABASE_ADMIN_USER` | Admin user for creating/dropping staging DBs |
+| `DATABASE_ADMIN_PASSWORD` | Admin password |
+| `DATABASE_APP_PASSWORD` | `signalsentry_app` user password |
+| `PROD_JWT_SECRET` | 64-char hex for JWT signing |
+| `PROD_NEXTAUTH_SECRET` | 64-char hex for NextAuth |
+| `PROD_TOKEN_ENCRYPTION_KEY` | 64-char hex (32 bytes) for AES-256-GCM |
+| `GHCR_PAT` | GitHub PAT with `read:packages` — used by ACA to pull images |
+
+### Manual Operations
+
+```bash
+# View logs
+az containerapp logs show --name signalsentry-prod-api --resource-group rg-signalsentry-apps --follow
+
+# Restart a container app
+az containerapp revision restart --name signalsentry-prod-api --resource-group rg-signalsentry-apps
+
+# Scale manually
+az containerapp update --name signalsentry-prod-api --resource-group rg-signalsentry-apps --min-replicas 2 --max-replicas 5
+
+# Connect to production DB
+psql "host=primary-burns-db.postgres.database.azure.com dbname=signalsentry_prod user=signalsentry_app sslmode=require"
+
+# One-time infra setup
+./scripts/azure-setup.sh
+
+# DNS setup (after first production deploy)
+./scripts/azure-setup.sh setup-dns
+```
+
+### Cost Estimate
+
+| Resource | Monthly |
+|----------|---------|
+| ACA production (~1.25 vCPU always-on) | ~$5-15 |
+| ACA staging (scale-to-zero) | ~$0-2 |
+| Azure DNS zone | ~$0.50 |
+| GHCR | Free |
+| **Total additional** | **~$6-18/month** |

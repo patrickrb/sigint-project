@@ -1,0 +1,106 @@
+name: Teardown Staging
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  id-token: write
+  packages: write
+  pull-requests: write
+  contents: read
+
+env:
+  PR_NUMBER: ${{ github.event.pull_request.number }}
+  APPS_RG: rg-signalsentry-apps
+  DB_NAME: signalsentry_staging_pr_${{ github.event.pull_request.number }}
+
+jobs:
+  teardown:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Azure login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # ── Delete container apps ──────────────────────────────────────────
+      - name: Delete staging container apps
+        run: |
+          for svc in api web worker; do
+            APP_NAME="staging-pr-${PR_NUMBER}-${svc}"
+            echo "Deleting $APP_NAME..."
+            az containerapp delete \
+              --name "$APP_NAME" \
+              --resource-group "$APPS_RG" \
+              --yes 2>/dev/null || echo "$APP_NAME not found, skipping"
+          done
+
+      # ── Drop staging database ──────────────────────────────────────────
+      - name: Drop staging database
+        run: |
+          # Terminate active connections
+          PGPASSWORD="${{ secrets.DATABASE_ADMIN_PASSWORD }}" psql \
+            "host=${{ secrets.DATABASE_HOST }} dbname=postgres user=${{ secrets.DATABASE_ADMIN_USER }} sslmode=require" \
+            -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${DB_NAME}' AND pid <> pg_backend_pid();" \
+            2>/dev/null || true
+
+          # Drop database
+          PGPASSWORD="${{ secrets.DATABASE_ADMIN_PASSWORD }}" psql \
+            "host=${{ secrets.DATABASE_HOST }} dbname=postgres user=${{ secrets.DATABASE_ADMIN_USER }} sslmode=require" \
+            -c "DROP DATABASE IF EXISTS ${DB_NAME};"
+
+      # ── Clean up GHCR images ───────────────────────────────────────────
+      - name: Delete staging container images
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const prTag = `pr-${process.env.PR_NUMBER}-`;
+
+            for (const pkg of ['signalsentry-api', 'signalsentry-web', 'signalsentry-worker']) {
+              try {
+                const versions = await github.rest.packages.getAllPackageVersionsForPackageOwnedByUser({
+                  package_type: 'container',
+                  package_name: pkg,
+                  username: owner,
+                  per_page: 100,
+                });
+
+                for (const version of versions.data) {
+                  const tags = version.metadata?.container?.tags || [];
+                  if (tags.some(t => t.startsWith(prTag))) {
+                    console.log(`Deleting ${pkg}:${tags.join(',')}`);
+                    await github.rest.packages.deletePackageVersionForUser({
+                      package_type: 'container',
+                      package_name: pkg,
+                      username: owner,
+                      package_version_id: version.id,
+                    });
+                  }
+                }
+              } catch (e) {
+                console.log(`Could not clean ${pkg}: ${e.message}`);
+              }
+            }
+
+      # ── PR Comment ─────────────────────────────────────────────────────
+      - name: Comment on PR confirming teardown
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: [
+                '## Staging Environment Torn Down',
+                '',
+                `Container apps \`staging-pr-${process.env.PR_NUMBER}-{api,web,worker}\` deleted.`,
+                `Database \`${process.env.DB_NAME}\` dropped.`,
+                'Container images cleaned up.',
+              ].join('\n'),
+            });
