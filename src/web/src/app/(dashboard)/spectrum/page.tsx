@@ -38,7 +38,9 @@ export default function SpectrumPage() {
         const json = await res.json();
         setAnomalies(json.observations || []);
       }
-    } catch {}
+    } catch (err) {
+      console.error("[spectrum]", err);
+    }
   }, [token, apiUrl]);
 
   useEffect(() => {

@@ -71,7 +71,9 @@ export function BleActivityTimeline() {
         const json = await res.json();
         setData(json.timeline || []);
       }
-    } catch {}
+    } catch (err) {
+      console.error("[ble-charts]", err);
+    }
   }, [token, apiUrl]);
 
   useEffect(() => {
@@ -164,7 +166,9 @@ export function BleChannelDistribution() {
 
         setData(result);
       }
-    } catch {}
+    } catch (err) {
+      console.error("[ble-charts]", err);
+    }
   }, [token, apiUrl]);
 
   useEffect(() => {

@@ -78,7 +78,9 @@ export function SpectrumBandChart() {
         const json = await res.json();
         setData(json.bands || []);
       }
-    } catch {}
+    } catch (err) {
+      console.error("[spectrum-charts]", err);
+    }
   }, [token, apiUrl]);
 
   useEffect(() => {
@@ -150,7 +152,9 @@ export function SpectrumAnomalyTimeline() {
         const json = await res.json();
         setData(json.timeline || []);
       }
-    } catch {}
+    } catch (err) {
+      console.error("[spectrum-charts]", err);
+    }
   }, [token, apiUrl]);
 
   useEffect(() => {

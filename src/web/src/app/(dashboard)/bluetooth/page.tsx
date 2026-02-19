@@ -42,7 +42,9 @@ export default function BluetoothPage() {
         const json = await res.json();
         setDevices(json.devices || []);
       }
-    } catch {}
+    } catch (err) {
+      console.error("[bluetooth]", err);
+    }
   }, [token, apiUrl]);
 
   useEffect(() => {
@@ -83,7 +85,9 @@ export default function BluetoothPage() {
           }
         }
       }
-    } catch {}
+    } catch (err) {
+      console.error("[bluetooth]", err);
+    }
     setApprovingSigs((prev) => {
       const next = new Set(prev);
       next.delete(device.signature);
