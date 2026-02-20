@@ -7,6 +7,7 @@ import pino from "pino";
 import { classifyObservations } from "./classifier";
 import { evaluateRules } from "./rules";
 import { cleanupRetention } from "./retention";
+import { processBleIntelligence } from "./ble-intelligence";
 
 const logger = pino({ name: "worker" });
 const prisma = new PrismaClient();
@@ -17,6 +18,7 @@ const RETENTION_INTERVAL = parseInt(process.env.RETENTION_CHECK_INTERVAL_MS || "
 async function pollCycle() {
   try {
     const classified = await classifyObservations(prisma, logger);
+    await processBleIntelligence(prisma, logger);
     if (classified > 0) {
       await evaluateRules(prisma, logger);
     }

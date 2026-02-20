@@ -25,6 +25,21 @@ export const spectrumAnomalyConfigSchema = z.object({
   minDeviationSigma: z.number().min(1.0),
 });
 
+export const bleTrackerDetectedConfigSchema = z.object({
+  trackerTypes: z.array(z.string()).min(1),
+  cooldownMinutes: z.number().int().min(1),
+});
+
+export const bleNewDeviceConfigSchema = z.object({
+  minObservations: z.number().int().min(1),
+  excludeKnown: z.boolean().default(true),
+});
+
+export const bleJammingConfigSchema = z.object({
+  minDeviationDb: z.number().min(1.0),
+  sustainedSeconds: z.number().int().min(1),
+});
+
 export const ruleConfigSchema = z.union([
   unknownBurstConfigSchema,
   newDeviceConfigSchema,
@@ -32,6 +47,9 @@ export const ruleConfigSchema = z.union([
   bleTrackerConfigSchema,
   bleFloodConfigSchema,
   spectrumAnomalyConfigSchema,
+  bleTrackerDetectedConfigSchema,
+  bleNewDeviceConfigSchema,
+  bleJammingConfigSchema,
 ]);
 
 export const updateRuleSchema = z.object({
@@ -44,6 +62,7 @@ export const ruleQuerySchema = z.object({
   type: z.enum([
     "UNKNOWN_BURST", "NEW_DEVICE", "CUSTOM",
     "BLE_TRACKER", "BLE_FLOOD", "SPECTRUM_ANOMALY",
+    "BLE_TRACKER_DETECTED", "BLE_NEW_DEVICE", "BLE_JAMMING",
   ]).optional(),
   enabled: z.coerce.boolean().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),

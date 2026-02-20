@@ -25,6 +25,7 @@ import ruleRoutes from "./routes/rules";
 import alertRoutes from "./routes/alerts";
 import eventRoutes from "./routes/events";
 import protocolRuleRoutes from "./routes/protocol-rules";
+import bleDeviceRoutes from "./routes/ble-devices";
 import { seedProtocolRules } from "./services/seed-protocol-rules";
 import { seedAlertRules } from "./services/seed-alert-rules";
 
@@ -78,6 +79,7 @@ app.use(ruleRoutes);
 app.use(alertRoutes);
 app.use(eventRoutes);
 app.use(protocolRuleRoutes);
+app.use(bleDeviceRoutes);
 
 // 404 handler
 app.use((_req, res) => {

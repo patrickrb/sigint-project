@@ -61,15 +61,19 @@ SAMPLES_PER_DWELL = int(SAMPLE_RATE * CHANNEL_DWELL_MS / 1000)
 BLE_CRC_POLY = 0x100065B
 BLE_CRC_INIT = 0x555555  # Advertising channel CRC init
 
-# Known BLE company identifiers (subset)
+# Known BLE company identifiers
 COMPANY_IDS = {
     "004c": "Apple",
     "0006": "Microsoft",
+    "001d": "Qualcomm",
     "004f": "Nordic Semiconductor",
     "0059": "Nordic Semiconductor",
     "0075": "Samsung",
+    "0087": "Garmin",
     "00e0": "Google",
     "0157": "Tile",
+    "0171": "Amazon",
+    "02e5": "Chipolo",
     "02ff": "Espressif",
 }
 
@@ -119,6 +123,25 @@ def crc24_ble(data: bytes) -> int:
                 crc = crc << 1
             crc &= 0xFFFFFF
     return crc
+
+
+def ble_dewhiten(data_bits: np.ndarray, channel: int) -> np.ndarray:
+    """Reverse BLE data whitening (XOR with LFSR sequence).
+
+    BLE uses a 7-bit LFSR with polynomial x^7 + x^4 + 1, seeded with
+    the channel number (position 0 = LSB of channel, bit 6 = 1).
+    The access address is NOT whitened; only header + payload + CRC are.
+    """
+    # LFSR initial state: bit6=1, bits 0-5 = channel number
+    lfsr = (channel & 0x3F) | 0x40
+    out = np.empty_like(data_bits)
+    for i in range(len(data_bits)):
+        # Output bit is LFSR bit 0
+        out[i] = data_bits[i] ^ (lfsr & 1)
+        # Feedback: new bit6 = bit0 XOR bit4
+        feedback = (lfsr & 1) ^ ((lfsr >> 4) & 1)
+        lfsr = (lfsr >> 1) | (feedback << 6)
+    return out
 
 
 def bits_to_bytes(bits: np.ndarray) -> bytes:
@@ -183,6 +206,104 @@ def parse_ad_structures(payload: bytes) -> dict:
     return fields
 
 
+# Apple Continuity sub-type names
+APPLE_CONTINUITY_TYPES = {
+    0x02: "iBeacon",
+    0x05: "AirDrop",
+    0x07: "AirPods",
+    0x0C: "Handoff",
+    0x0F: "NearbyAction",
+    0x10: "NearbyInfo",
+    0x12: "FindMy",
+}
+
+
+def parse_apple_continuity(mfg_data: bytes) -> dict:
+    """Parse Apple Continuity Protocol from manufacturer-specific data.
+
+    mfg_data starts after the 2-byte company ID (004c).
+    Format: [sub-type (1 byte)] [length (1 byte)] [payload...]
+    """
+    fields: dict = {}
+    if len(mfg_data) < 2:
+        return fields
+
+    sub_type = mfg_data[0]
+    # sub_length = mfg_data[1]
+    payload = mfg_data[2:]
+
+    type_name = APPLE_CONTINUITY_TYPES.get(sub_type, f"Unknown-0x{sub_type:02x}")
+    fields["continuityType"] = type_name
+
+    if sub_type == 0x02 and len(payload) >= 20:
+        # iBeacon: 16-byte UUID + 2-byte major + 2-byte minor + 1-byte TX power
+        uuid = payload[:16].hex()
+        fields["ibeaconUuid"] = f"{uuid[:8]}-{uuid[8:12]}-{uuid[12:16]}-{uuid[16:20]}-{uuid[20:]}"
+        fields["ibeaconMajor"] = struct.unpack(">H", payload[16:18])[0]
+        fields["ibeaconMinor"] = struct.unpack(">H", payload[18:20])[0]
+        if len(payload) >= 21:
+            fields["txPower"] = struct.unpack("b", payload[20:21])[0]
+
+    elif sub_type == 0x10 and len(payload) >= 1:
+        # Nearby Info: activity level in upper nibble
+        activity = (payload[0] >> 4) & 0x0F
+        fields["activityLevel"] = activity
+
+    elif sub_type == 0x0F and len(payload) >= 1:
+        # Nearby Action
+        action_type = payload[0]
+        fields["nearbyAction"] = f"0x{action_type:02x}"
+
+    elif sub_type == 0x12:
+        # Find My
+        fields["trackerType"] = "Apple Find My"
+
+    return fields
+
+
+def detect_tracker_type(fields: dict) -> Optional[str]:
+    """Identify known tracker types from advertising data fields."""
+    mfg_id = fields.get("manufacturerId", "")
+    service_uuids = fields.get("serviceUuids", [])
+
+    # Apple Find My (continuity sub-type 0x12)
+    if mfg_id == "004c" and fields.get("continuityType") == "FindMy":
+        return "Apple Find My"
+
+    # Tile (company ID 0157 or service UUID fe26)
+    if mfg_id == "0157" or "fe26" in service_uuids:
+        return "Tile"
+
+    # Samsung SmartTag (company ID 0075 + typical service UUIDs)
+    if mfg_id == "0075" and ("fd5a" in service_uuids or "fef5" in service_uuids):
+        return "Samsung SmartTag"
+
+    # Chipolo (company ID 02e5)
+    if mfg_id == "02e5":
+        return "Chipolo"
+
+    return None
+
+
+def compute_fingerprint(fields: dict, pdu_type: int, payload_length: int) -> str:
+    """Compute a composite device fingerprint that persists across MAC rotations.
+
+    Hashes: manufacturerId + sorted serviceUuids + pdu type + TX power +
+    payload length + continuity type. This produces a stable identifier
+    even when the MAC address rotates (every ~15 min on Apple/Android).
+    """
+    parts = [
+        fields.get("manufacturerId", ""),
+        ",".join(sorted(fields.get("serviceUuids", []))),
+        str(pdu_type),
+        str(fields.get("txPower", "")),
+        str(payload_length),
+        fields.get("continuityType", ""),
+    ]
+    raw = "|".join(parts)
+    return hashlib.sha256(raw.encode()).hexdigest()[:24]
+
+
 class BleProcessor:
     def __init__(self):
         # Dedup: signature -> last emission timestamp
@@ -190,6 +311,30 @@ class BleProcessor:
         self.energy_count = 0
         self.adv_count = 0
         self.hop_count = 0
+        # Per-channel noise floor baseline (Welford's online algorithm)
+        self.noise_stats: dict[int, dict] = {}  # channel -> {n, mean, m2}
+
+    def update_noise_baseline(self, channel: int, noise_db: float) -> dict:
+        """Update per-channel noise floor running statistics (Welford's algorithm).
+        Returns dict with baseline, stddev, deviation for the current sample."""
+        if channel not in self.noise_stats:
+            self.noise_stats[channel] = {"n": 0, "mean": 0.0, "m2": 0.0}
+
+        stats = self.noise_stats[channel]
+        stats["n"] += 1
+        delta = noise_db - stats["mean"]
+        stats["mean"] += delta / stats["n"]
+        delta2 = noise_db - stats["mean"]
+        stats["m2"] += delta * delta2
+
+        variance = stats["m2"] / stats["n"] if stats["n"] > 1 else 0.0
+        stddev = variance ** 0.5
+
+        return {
+            "noiseBaseline": round(stats["mean"], 2),
+            "noiseStddev": round(stddev, 2),
+            "noiseDeviation": round((noise_db - stats["mean"]) / stddev, 2) if stddev > 0 else 0.0,
+        }
 
     def capture_channel(self, channel: int, freq_hz: int) -> Optional[np.ndarray]:
         """Capture IQ samples from a single BLE channel via hackrf_transfer."""
@@ -245,6 +390,9 @@ class BleProcessor:
         transitions = np.diff(above.astype(np.int8))
         burst_count = int(np.sum(transitions == 1))
 
+        # Update noise floor baseline
+        noise_info = self.update_noise_baseline(channel, noise)
+
         sig = compute_signature("ble-energy", f"channel={channel}")
 
         obs = {
@@ -261,6 +409,7 @@ class BleProcessor:
                 "peakPower": round(rssi, 1),
                 "burstCount": burst_count,
                 "dwellMs": CHANNEL_DWELL_MS,
+                **noise_info,
             },
         }
         output(obs)
@@ -291,10 +440,11 @@ class BleProcessor:
         bits = (symbols_avg > 0).astype(np.int8)
 
         # Search for BLE access address
-        self._find_and_decode_packets(bits, channel, freq_hz, iq)
+        self._find_and_decode_packets(bits, channel, freq_hz, iq, phase_diff)
 
     def _find_and_decode_packets(self, bits: np.ndarray, channel: int,
-                                 freq_hz: int, iq: np.ndarray):
+                                 freq_hz: int, iq: np.ndarray,
+                                 phase_diff: np.ndarray):
         """Search bitstream for BLE advertising access address and decode PDUs."""
         # Sliding correlation for access address
         aa_len = len(BLE_AA_BITS)
@@ -312,6 +462,9 @@ class BleProcessor:
             # Found access address at position i
             pdu_start = i + aa_len
             remaining_bits = bits[pdu_start:]
+
+            # Reverse data whitening (AA is not whitened, everything after is)
+            remaining_bits = ble_dewhiten(remaining_bits, channel)
 
             if len(remaining_bits) < 16:  # Need at least PDU header (2 bytes)
                 continue
@@ -361,6 +514,20 @@ class BleProcessor:
 
             adv_type = ADV_TYPES.get(pdu_type, f"UNKNOWN_{pdu_type}")
 
+            # Parse Apple Continuity if manufacturer is Apple (2A)
+            if ad_fields.get("manufacturerId") == "004c" and len(ad_data) > 4:
+                # mfg_data starts after AD type byte + company ID (2 bytes)
+                # Find manufacturer data in raw ad_data
+                mfg_payload = self._extract_mfg_payload(ad_data)
+                if mfg_payload:
+                    continuity = parse_apple_continuity(mfg_payload)
+                    ad_fields.update(continuity)
+
+            # Detect tracker type (2B)
+            tracker = detect_tracker_type(ad_fields)
+            if tracker:
+                ad_fields["trackerType"] = tracker
+
             # Compute signal metrics from IQ at this position
             # Approximate sample position
             samples_per_symbol = SAMPLE_RATE // BLE_SYMBOL_RATE
@@ -373,6 +540,18 @@ class BleProcessor:
                 rssi = float(10 * np.log10(np.mean(pkt_power) + 1e-12))
             else:
                 rssi = -99.0
+
+            # Carrier Frequency Offset from preamble (2D)
+            cfo_hz = 0.0
+            preamble_symbols = 8  # BLE preamble is 8 symbols (01010101)
+            pd_start = i * samples_per_symbol
+            pd_end = pd_start + preamble_symbols * samples_per_symbol
+            if pd_end < len(phase_diff):
+                mean_phase = float(np.mean(phase_diff[pd_start:pd_end]))
+                cfo_hz = mean_phase * SAMPLE_RATE / (2 * np.pi)
+
+            # Compute composite fingerprint (2C)
+            fingerprint_id = compute_fingerprint(ad_fields, pdu_type, payload_length)
 
             # Dedup check
             sig = compute_signature(
@@ -392,6 +571,8 @@ class BleProcessor:
                 "advType": adv_type,
                 "crcValid": crc_valid,
                 "addressType": "random" if tx_add else "public",
+                "fingerprintId": fingerprint_id,
+                "cfoHz": round(cfo_hz, 1),
             }
             fields.update(ad_fields)
 
@@ -408,6 +589,23 @@ class BleProcessor:
             }
             output(obs)
             self.adv_count += 1
+
+    @staticmethod
+    def _extract_mfg_payload(ad_data: bytes) -> Optional[bytes]:
+        """Extract manufacturer-specific payload (after company ID) from AD structures."""
+        i = 0
+        while i < len(ad_data):
+            if i + 1 >= len(ad_data):
+                break
+            length = ad_data[i]
+            if length == 0 or i + 1 + length > len(ad_data):
+                break
+            ad_type = ad_data[i + 1]
+            if ad_type == 0xFF and length >= 3:
+                # Skip company ID (2 bytes), return rest
+                return ad_data[i + 4:i + 1 + length]
+            i += 1 + length
+        return None
 
     def cleanup_dedup(self):
         """Remove stale dedup entries."""

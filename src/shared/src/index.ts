@@ -7,6 +7,7 @@ export type {
   Rule,
   AlertEvent,
   ProtocolRule,
+  BleDevice,
 } from "@prisma/client";
 export type {
   Role,
@@ -14,6 +15,8 @@ export type {
   Classification,
   RuleType,
   Severity,
+  BleDeviceType,
+  BleClassification,
 } from "@prisma/client";
 
 export * from "./schemas/observation";
@@ -23,6 +26,7 @@ export * from "./schemas/rule";
 export * from "./schemas/alert";
 export * from "./schemas/auth";
 export * from "./schemas/protocol-rule";
+export * from "./schemas/ble-device";
 export * from "./utils/signature";
 export * from "./utils/constants";
 export * from "./utils/protocol-match";

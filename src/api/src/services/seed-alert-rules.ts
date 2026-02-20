@@ -20,6 +20,24 @@ const DEFAULT_ALERT_RULES = [
     config: { minStreakMinutes: 5, minDeviationSigma: 4.0 },
     enabled: false,
   },
+  {
+    name: "BLE Tracker Detected",
+    type: "BLE_TRACKER_DETECTED" as const,
+    config: { trackerTypes: ["Apple Find My", "Tile", "Samsung SmartTag", "Chipolo"], cooldownMinutes: 60 },
+    enabled: false,
+  },
+  {
+    name: "BLE New Device",
+    type: "BLE_NEW_DEVICE" as const,
+    config: { minObservations: 3, excludeKnown: true },
+    enabled: false,
+  },
+  {
+    name: "BLE Jamming Detection",
+    type: "BLE_JAMMING" as const,
+    config: { minDeviationDb: 6.0, sustainedSeconds: 30 },
+    enabled: false,
+  },
 ];
 
 export async function seedAlertRules(): Promise<void> {
