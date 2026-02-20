@@ -22,6 +22,15 @@ export async function evaluateRules(prisma: PrismaClient, logger: Logger): Promi
         case "SPECTRUM_ANOMALY":
           await evaluateSpectrumAnomaly(prisma, rule, logger);
           break;
+        case "BLE_TRACKER_DETECTED":
+          await evaluateBleTrackerDetected(prisma, rule, logger);
+          break;
+        case "BLE_NEW_DEVICE":
+          await evaluateBleNewDevice(prisma, rule, logger);
+          break;
+        case "BLE_JAMMING":
+          await evaluateBleJamming(prisma, rule, logger);
+          break;
       }
     } catch (err) {
       logger.error({ err, ruleId: rule.id }, "Rule evaluation error");
@@ -270,6 +279,147 @@ async function evaluateSpectrumAnomaly(prisma: PrismaClient, rule: any, logger: 
         count: group._count,
         band: fields?.band,
       }, "Spectrum anomaly alert created");
+    }
+  }
+}
+
+async function evaluateBleTrackerDetected(prisma: PrismaClient, rule: any, logger: Logger) {
+  const config = rule.config as { trackerTypes: string[]; cooldownMinutes: number };
+  const cooldownSince = new Date(Date.now() - config.cooldownMinutes * 60 * 1000);
+
+  // Find BleDevice entries with matching tracker types
+  const devices = await prisma.bleDevice.findMany({
+    where: {
+      trackerType: { in: config.trackerTypes },
+      lastSeen: { gte: cooldownSince },
+    },
+    select: { id: true, fingerprintId: true, trackerType: true, displayName: true, manufacturerName: true },
+  });
+
+  for (const device of devices) {
+    const existing = await prisma.alertEvent.findFirst({
+      where: {
+        ruleId: rule.id,
+        meta: { path: ["fingerprintId"], equals: device.fingerprintId },
+        createdAt: { gte: cooldownSince },
+      },
+    });
+
+    if (!existing) {
+      await prisma.alertEvent.create({
+        data: {
+          ruleId: rule.id,
+          severity: "CRITICAL",
+          message: `${device.trackerType} tracker detected: ${device.displayName || device.fingerprintId.slice(0, 12)}... (${device.manufacturerName || "unknown"})`,
+          meta: {
+            fingerprintId: device.fingerprintId,
+            trackerType: device.trackerType,
+            bleDeviceId: device.id,
+          } as object,
+        },
+      });
+      logger.warn({ ruleId: rule.id, fingerprintId: device.fingerprintId.slice(0, 12), trackerType: device.trackerType }, "BLE tracker detected alert created");
+    }
+  }
+}
+
+async function evaluateBleNewDevice(prisma: PrismaClient, rule: any, logger: Logger) {
+  const config = rule.config as { minObservations: number; excludeKnown: boolean };
+  const recentWindow = new Date(Date.now() - 30_000); // Last 30 seconds
+
+  const whereClause: Record<string, unknown> = {
+    firstSeen: { gte: recentWindow },
+    observationCount: { gte: config.minObservations },
+  };
+  if (config.excludeKnown) {
+    whereClause.classification = { not: "KNOWN" };
+  }
+
+  const newDevices = await prisma.bleDevice.findMany({
+    where: whereClause,
+    select: { id: true, fingerprintId: true, deviceType: true, displayName: true, trackerType: true },
+  });
+
+  for (const device of newDevices) {
+    const existing = await prisma.alertEvent.findFirst({
+      where: {
+        ruleId: rule.id,
+        meta: { path: ["fingerprintId"], equals: device.fingerprintId },
+      },
+    });
+
+    if (!existing) {
+      const label = device.displayName || device.fingerprintId.slice(0, 12);
+      await prisma.alertEvent.create({
+        data: {
+          ruleId: rule.id,
+          severity: device.trackerType ? "WARNING" : "INFO",
+          message: `New BLE device: ${label} (${device.deviceType}${device.trackerType ? `, ${device.trackerType}` : ""})`,
+          meta: {
+            fingerprintId: device.fingerprintId,
+            deviceType: device.deviceType,
+            bleDeviceId: device.id,
+          } as object,
+        },
+      });
+      logger.info({ ruleId: rule.id, fingerprintId: device.fingerprintId.slice(0, 12), deviceType: device.deviceType }, "BLE new device alert created");
+    }
+  }
+}
+
+async function evaluateBleJamming(prisma: PrismaClient, rule: any, logger: Logger) {
+  const config = rule.config as { minDeviationDb: number; sustainedSeconds: number };
+  const since = new Date(Date.now() - config.sustainedSeconds * 1000);
+
+  // Check for sustained noise floor deviation in ble-energy observations
+  const rows = await prisma.$queryRaw<Array<{
+    channel: number;
+    avg_deviation: number;
+    count: bigint;
+    min_time: Date;
+    max_time: Date;
+  }>>`
+    SELECT
+      (fields->>'channel')::int AS channel,
+      AVG((fields->>'noiseDeviation')::float)::float AS avg_deviation,
+      COUNT(*)::bigint AS count,
+      MIN("receivedAt") AS min_time,
+      MAX("receivedAt") AS max_time
+    FROM observations
+    WHERE "receivedAt" >= ${since}
+      AND protocol = 'ble-energy'
+      AND fields->>'noiseDeviation' IS NOT NULL
+    GROUP BY (fields->>'channel')::int
+    HAVING AVG((fields->>'noiseDeviation')::float) > ${config.minDeviationDb}
+  `;
+
+  for (const row of rows) {
+    const spanSeconds = (row.max_time.getTime() - row.min_time.getTime()) / 1000;
+    if (spanSeconds < config.sustainedSeconds * 0.5) continue;
+
+    const existing = await prisma.alertEvent.findFirst({
+      where: {
+        ruleId: rule.id,
+        meta: { path: ["channel"], equals: row.channel },
+        createdAt: { gte: since },
+      },
+    });
+
+    if (!existing) {
+      await prisma.alertEvent.create({
+        data: {
+          ruleId: rule.id,
+          severity: "CRITICAL",
+          message: `BLE jamming suspected: Channel ${row.channel} noise floor +${row.avg_deviation.toFixed(1)} dB above baseline for ${Math.round(spanSeconds)}s`,
+          meta: {
+            channel: row.channel,
+            avgDeviation: Math.round(row.avg_deviation * 10) / 10,
+            spanSeconds: Math.round(spanSeconds),
+            sampleCount: Number(row.count),
+          } as object,
+        },
+      });
+      logger.warn({ ruleId: rule.id, channel: row.channel, deviation: row.avg_deviation.toFixed(1) }, "BLE jamming alert created");
     }
   }
 }

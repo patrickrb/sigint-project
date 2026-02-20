@@ -469,6 +469,51 @@ router.get("/api/observations/ble-devices", authenticateUser, async (req: Reques
   }
 });
 
+// BLE noise floor timeline: per-channel noise with baseline and deviation
+router.get("/api/observations/ble-noise", authenticateUser, async (req: Request, res: Response) => {
+  try {
+    const parsedMinutes = parseInt(req.query.minutes as string, 10);
+    const minutes = Math.min(Number.isNaN(parsedMinutes) ? 60 : parsedMinutes, 1440);
+    const since = new Date(Date.now() - minutes * 60 * 1000);
+
+    const rows = await prisma.$queryRaw<Array<{
+      bucket: Date;
+      channel: number;
+      avg_noise: number;
+      avg_baseline: number;
+      avg_deviation: number;
+      burst_count: bigint;
+    }>>`
+      SELECT
+        date_trunc('minute', "receivedAt") AS bucket,
+        (fields->>'channel')::int AS channel,
+        AVG(noise)::float AS avg_noise,
+        AVG((fields->>'noiseBaseline')::float)::float AS avg_baseline,
+        AVG((fields->>'noiseDeviation')::float)::float AS avg_deviation,
+        SUM((fields->>'burstCount')::int)::bigint AS burst_count
+      FROM observations
+      WHERE "receivedAt" >= ${since}
+        AND protocol = 'ble-energy'
+        AND fields->>'channel' IS NOT NULL
+      GROUP BY bucket, (fields->>'channel')::int
+      ORDER BY bucket ASC, channel ASC
+    `;
+
+    const timeline = rows.map((r) => ({
+      time: r.bucket.toISOString(),
+      channel: r.channel,
+      avgNoise: Math.round(r.avg_noise * 10) / 10,
+      avgBaseline: r.avg_baseline != null ? Math.round(r.avg_baseline * 10) / 10 : null,
+      avgDeviation: r.avg_deviation != null ? Math.round(r.avg_deviation * 100) / 100 : null,
+      burstCount: Number(r.burst_count),
+    }));
+
+    res.json({ timeline });
+  } catch (err) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 router.post("/api/observations/:id/approve", authenticateUser, async (req: Request, res: Response) => {
   try {
     const { id } = req.params;

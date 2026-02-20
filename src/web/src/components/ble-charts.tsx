@@ -13,6 +13,7 @@ import {
   YAxis,
   Tooltip,
   ResponsiveContainer,
+  Legend,
 } from "recharts";
 
 const CHART_COLORS = {
@@ -227,5 +228,112 @@ export function BleChannelDistribution() {
         ))}
       </div>
     </div>
+  );
+}
+
+interface NoisePoint {
+  time: string;
+  channel: number;
+  avgNoise: number;
+  avgBaseline: number | null;
+  avgDeviation: number | null;
+  burstCount: number;
+}
+
+export function BleNoiseFloorChart() {
+  const { data: session } = useSession();
+  const [data, setData] = useState<Array<Record<string, unknown>>>([]);
+
+  const token = (session?.user as any)?.apiToken;
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
+
+  const fetchData = useCallback(async () => {
+    if (!token) return;
+    try {
+      const res = await fetch(`${apiUrl}/api/observations/ble-noise?minutes=60`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const json = await res.json();
+        const raw: NoisePoint[] = json.timeline || [];
+
+        // Pivot: group by time, create columns for each channel
+        const map = new Map<string, Record<string, unknown>>();
+        for (const point of raw) {
+          if (!map.has(point.time)) {
+            map.set(point.time, { time: point.time });
+          }
+          const entry = map.get(point.time)!;
+          entry[`ch${point.channel}`] = point.avgNoise;
+          if (point.avgBaseline != null) {
+            entry[`baseline${point.channel}`] = point.avgBaseline;
+          }
+        }
+        setData(Array.from(map.values()));
+      }
+    } catch (err) {
+      console.error("[ble-charts]", err);
+    }
+  }, [token, apiUrl]);
+
+  useEffect(() => {
+    fetchData();
+    const interval = setInterval(fetchData, 10000);
+    const unsub = onDataChanged(fetchData);
+    return () => { clearInterval(interval); unsub(); };
+  }, [fetchData]);
+
+  if (data.length === 0) {
+    return (
+      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+        No noise floor data yet
+      </div>
+    );
+  }
+
+  return (
+    <ResponsiveContainer width="100%" height="100%">
+      <AreaChart data={data} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
+        <defs>
+          <linearGradient id="noiseGrad37" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="5%" stopColor={CHART_COLORS.primary} stopOpacity={0.2} />
+            <stop offset="95%" stopColor={CHART_COLORS.primary} stopOpacity={0} />
+          </linearGradient>
+          <linearGradient id="noiseGrad38" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="5%" stopColor={CHART_COLORS.cyan} stopOpacity={0.2} />
+            <stop offset="95%" stopColor={CHART_COLORS.cyan} stopOpacity={0} />
+          </linearGradient>
+          <linearGradient id="noiseGrad39" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="5%" stopColor={CHART_COLORS.purple} stopOpacity={0.2} />
+            <stop offset="95%" stopColor={CHART_COLORS.purple} stopOpacity={0} />
+          </linearGradient>
+        </defs>
+        <XAxis
+          dataKey="time"
+          tickFormatter={formatTime}
+          tick={{ fill: "#a1a1a1", fontSize: 10 }}
+          axisLine={false}
+          tickLine={false}
+          minTickGap={40}
+        />
+        <YAxis
+          tick={{ fill: "#a1a1a1", fontSize: 10 }}
+          axisLine={false}
+          tickLine={false}
+          label={{ value: "dB", angle: -90, position: "insideLeft", style: { fill: "#a1a1a1", fontSize: 10 } }}
+        />
+        <Tooltip content={<ChartTooltipContent />} />
+        <Legend
+          wrapperStyle={{ fontSize: 10 }}
+          formatter={(value: string) => <span className="text-muted-foreground">{value}</span>}
+        />
+        <Area type="monotone" dataKey="ch37" name="Ch 37" stroke={CHART_COLORS.primary} strokeWidth={1.5} fill="url(#noiseGrad37)" />
+        <Area type="monotone" dataKey="ch38" name="Ch 38" stroke={CHART_COLORS.cyan} strokeWidth={1.5} fill="url(#noiseGrad38)" />
+        <Area type="monotone" dataKey="ch39" name="Ch 39" stroke={CHART_COLORS.purple} strokeWidth={1.5} fill="url(#noiseGrad39)" />
+        <Area type="monotone" dataKey="baseline37" name="Baseline 37" stroke={CHART_COLORS.primary} strokeWidth={1} strokeDasharray="4 4" fill="none" />
+        <Area type="monotone" dataKey="baseline38" name="Baseline 38" stroke={CHART_COLORS.cyan} strokeWidth={1} strokeDasharray="4 4" fill="none" />
+        <Area type="monotone" dataKey="baseline39" name="Baseline 39" stroke={CHART_COLORS.purple} strokeWidth={1} strokeDasharray="4 4" fill="none" />
+      </AreaChart>
+    </ResponsiveContainer>
   );
 }

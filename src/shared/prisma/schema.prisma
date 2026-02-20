@@ -116,6 +116,9 @@ enum RuleType {
   BLE_TRACKER
   BLE_FLOOD
   SPECTRUM_ANOMALY
+  BLE_TRACKER_DETECTED
+  BLE_NEW_DEVICE
+  BLE_JAMMING
 }
 
 model AlertEvent {
@@ -149,4 +152,45 @@ model ProtocolRule {
   createdAt      DateTime       @default(now())
 
   @@map("protocol_rules")
+}
+
+model BleDevice {
+  id               String            @id @default(cuid())
+  fingerprintId    String            @unique
+  displayName      String?
+  deviceType       BleDeviceType     @default(UNKNOWN)
+  trackerType      String?
+  manufacturerId   String?
+  manufacturerName String?
+  firstSeen        DateTime
+  lastSeen         DateTime
+  observationCount Int               @default(0)
+  avgRssi          Float?
+  avgAdvIntervalMs Float?
+  macHashes        Json              @default("[]")
+  serviceUuids     Json              @default("[]")
+  meta             Json?
+  classification   BleClassification @default(UNKNOWN)
+
+  @@index([lastSeen])
+  @@index([classification])
+  @@index([deviceType])
+  @@index([trackerType])
+  @@map("ble_devices")
+}
+
+enum BleDeviceType {
+  PHONE
+  TRACKER
+  BEACON
+  IOT
+  WEARABLE
+  COMPUTER
+  UNKNOWN
+}
+
+enum BleClassification {
+  KNOWN
+  UNKNOWN
+  THREAT
 }

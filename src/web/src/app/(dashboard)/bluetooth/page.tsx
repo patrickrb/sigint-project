@@ -7,8 +7,8 @@ import { Badge } from "@/components/ui/badge";
 import { SignalBar } from "@/components/ui/signal-bar";
 import { onDataChanged } from "@/lib/events";
 import { emitDataChanged } from "@/lib/events";
-import { BleActivityTimeline, BleChannelDistribution } from "@/components/ble-charts";
-import { Bluetooth, Radio, Activity, PieChart } from "lucide-react";
+import { BleActivityTimeline, BleChannelDistribution, BleNoiseFloorChart } from "@/components/ble-charts";
+import { Bluetooth, Radio, Activity, PieChart, Volume2, ShieldAlert } from "lucide-react";
 import { timeAgo, rssiToLevel, truncateSignature } from "@/lib/utils";
 
 interface BleDevice {
@@ -23,11 +23,31 @@ interface BleDevice {
   fields: Record<string, unknown>;
 }
 
+interface BleDeviceIdentity {
+  id: string;
+  fingerprintId: string;
+  displayName: string | null;
+  deviceType: string;
+  trackerType: string | null;
+  manufacturerId: string | null;
+  manufacturerName: string | null;
+  firstSeen: string;
+  lastSeen: string;
+  observationCount: number;
+  avgRssi: number | null;
+  macHashes: string[];
+  serviceUuids: string[];
+  meta: Record<string, unknown> | null;
+  classification: string;
+}
+
 export default function BluetoothPage() {
   const { data: session } = useSession();
   const [devices, setDevices] = useState<BleDevice[]>([]);
+  const [identities, setIdentities] = useState<BleDeviceIdentity[]>([]);
   const [expandedSigs, setExpandedSigs] = useState<Set<string>>(new Set());
   const [approvingSigs, setApprovingSigs] = useState<Set<string>>(new Set());
+  const [classifyingIds, setClassifyingIds] = useState<Set<string>>(new Set());
 
   const token = (session?.user as any)?.apiToken;
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
@@ -35,12 +55,21 @@ export default function BluetoothPage() {
   const fetchDevices = useCallback(async () => {
     if (!token) return;
     try {
-      const res = await fetch(`${apiUrl}/api/observations/ble-devices?minutes=60`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (res.ok) {
-        const json = await res.json();
+      const [devRes, idRes] = await Promise.all([
+        fetch(`${apiUrl}/api/observations/ble-devices?minutes=60`, {
+          headers: { Authorization: `Bearer ${token}` },
+        }),
+        fetch(`${apiUrl}/api/ble-devices?limit=200`, {
+          headers: { Authorization: `Bearer ${token}` },
+        }),
+      ]);
+      if (devRes.ok) {
+        const json = await devRes.json();
         setDevices(json.devices || []);
+      }
+      if (idRes.ok) {
+        const json = await idRes.json();
+        setIdentities(json.devices || []);
       }
     } catch (err) {
       console.error("[bluetooth]", err);
@@ -95,6 +124,28 @@ export default function BluetoothPage() {
     });
   }, [token, apiUrl]);
 
+  const handleClassify = useCallback(async (identity: BleDeviceIdentity, classification: string) => {
+    if (!token) return;
+    setClassifyingIds((prev) => new Set(prev).add(identity.id));
+    try {
+      const res = await fetch(`${apiUrl}/api/ble-devices/${identity.id}/classify`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ classification }),
+      });
+      if (res.ok) {
+        emitDataChanged();
+      }
+    } catch (err) {
+      console.error("[bluetooth]", err);
+    }
+    setClassifyingIds((prev) => {
+      const next = new Set(prev);
+      next.delete(identity.id);
+      return next;
+    });
+  }, [token, apiUrl]);
+
   const classificationBadge = (c: string) => {
     switch (c) {
       case "KNOWN": return <Badge variant="success">Known</Badge>;
@@ -116,11 +167,20 @@ export default function BluetoothPage() {
             BLE device inventory and advertising channel activity
           </p>
         </div>
-        <div className="flex items-center gap-2 rounded-lg border border-blue-500/20 bg-blue-500/5 px-4 py-2">
-          <span className="inline-block h-2 w-2 rounded-full bg-blue-400 animate-pulse-dot" />
-          <span className="text-sm font-medium text-blue-400">
-            {devices.length} DEVICE{devices.length !== 1 ? "S" : ""}
-          </span>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 rounded-lg border border-blue-500/20 bg-blue-500/5 px-4 py-2">
+            <span className="inline-block h-2 w-2 rounded-full bg-blue-400 animate-pulse-dot" />
+            <span className="text-sm font-medium text-blue-400">
+              {identities.length > 0
+                ? `${identities.length} FINGERPRINT${identities.length !== 1 ? "S" : ""}`
+                : `${devices.length} DEVICE${devices.length !== 1 ? "S" : ""}`}
+            </span>
+          </div>
+          {identities.length > 0 && devices.length > 0 && (
+            <span className="text-xs text-muted-foreground">
+              {devices.length} MAC{devices.length !== 1 ? "s" : ""}
+            </span>
+          )}
         </div>
       </div>
 
@@ -156,6 +216,22 @@ export default function BluetoothPage() {
         </Card>
       </div>
 
+      {/* Noise floor chart */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <Volume2 className="h-4 w-4 text-blue-400" />
+            Noise Floor
+            <span className="text-xs font-normal text-muted-foreground">(per channel, last 60 min)</span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="h-48">
+            <BleNoiseFloorChart />
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Device inventory */}
       <Card>
         <CardHeader>
@@ -180,7 +256,7 @@ export default function BluetoothPage() {
             <div className="overflow-x-auto rounded-lg border border-border">
               <div
                 className="grid items-center border-b border-border bg-muted/50 px-3 py-2 text-xs font-medium text-muted-foreground"
-                style={{ gridTemplateColumns: "16px 120px 140px 70px 60px 80px 80px min-content" }}
+                style={{ gridTemplateColumns: "16px 120px 140px 70px 60px 80px 80px 80px min-content" }}
               >
                 <span />
                 <span>Device</span>
@@ -189,6 +265,7 @@ export default function BluetoothPage() {
                 <span>Seen</span>
                 <span>Last Seen</span>
                 <span>Mfg</span>
+                <span>Type</span>
                 <span>Status</span>
               </div>
               {devices.map((device) => {
@@ -198,13 +275,19 @@ export default function BluetoothPage() {
                 const deviceName = String(fields?.deviceName || "");
                 const manufacturer = String(fields?.manufacturerName || "");
                 const advType = String(fields?.advType || "");
+                const trackerType = fields?.trackerType as string | undefined;
+                const fingerprintId = fields?.fingerprintId as string | undefined;
                 const channel = fields?.channel;
+                // Look up the identity for this device
+                const identity = fingerprintId
+                  ? identities.find((id) => id.fingerprintId === fingerprintId)
+                  : undefined;
 
                 return (
                   <div key={device.signature} className="border-b border-border/40 last:border-b-0">
                     <div
                       className="grid cursor-pointer items-center px-3 py-2 hover:bg-card/80"
-                      style={{ gridTemplateColumns: "16px 120px 140px 70px 60px 80px 80px min-content" }}
+                      style={{ gridTemplateColumns: "16px 120px 140px 70px 60px 80px 80px 80px min-content" }}
                       onClick={() => toggleExpand(device.signature)}
                     >
                       <svg
@@ -240,8 +323,22 @@ export default function BluetoothPage() {
                         {manufacturer || "—"}
                       </span>
 
+                      <div className="flex items-center gap-1">
+                        {trackerType ? (
+                          <Badge variant="destructive" className="text-[10px] px-1 py-0">
+                            {trackerType}
+                          </Badge>
+                        ) : identity?.deviceType && identity.deviceType !== "UNKNOWN" ? (
+                          <Badge variant="outline" className="text-[10px] px-1 py-0">
+                            {identity.deviceType.toLowerCase()}
+                          </Badge>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
+                      </div>
+
                       <div className="flex items-center gap-1.5 whitespace-nowrap">
-                        {classificationBadge(device.classification)}
+                        {classificationBadge(identity?.classification || device.classification)}
                         {device.classification !== "KNOWN" && (
                           <button
                             onClick={(e) => { e.stopPropagation(); handleApprove(device); }}
@@ -249,6 +346,15 @@ export default function BluetoothPage() {
                             className="rounded border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-xs font-medium text-emerald-400 transition-colors hover:bg-emerald-500/20 disabled:opacity-50"
                           >
                             {approvingSigs.has(device.signature) ? "..." : "Approve"}
+                          </button>
+                        )}
+                        {identity && identity.classification !== "THREAT" && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleClassify(identity, "THREAT"); }}
+                            disabled={classifyingIds.has(identity.id)}
+                            className="rounded border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 text-xs font-medium text-red-400 transition-colors hover:bg-red-500/20 disabled:opacity-50"
+                          >
+                            <ShieldAlert className="inline h-3 w-3" />
                           </button>
                         )}
                       </div>
@@ -293,6 +399,30 @@ export default function BluetoothPage() {
                               <span className="font-mono font-medium">
                                 {Array.isArray(fields.serviceUuids) ? fields.serviceUuids.join(", ") : String(fields.serviceUuids)}
                               </span>
+                            </div>
+                          )}
+                          {fingerprintId && (
+                            <div className="flex items-baseline gap-2 text-xs">
+                              <span className="text-muted-foreground">Fingerprint</span>
+                              <span className="font-mono font-medium">{fingerprintId}</span>
+                            </div>
+                          )}
+                          {identity?.deviceType && (
+                            <div className="flex items-baseline gap-2 text-xs">
+                              <span className="text-muted-foreground">Device Type</span>
+                              <span className="font-mono font-medium">{identity.deviceType}</span>
+                            </div>
+                          )}
+                          {identity && (identity.macHashes as string[])?.length > 1 && (
+                            <div className="flex items-baseline gap-2 text-xs">
+                              <span className="text-muted-foreground">MAC Rotations</span>
+                              <span className="font-mono font-medium">{(identity.macHashes as string[]).length} seen</span>
+                            </div>
+                          )}
+                          {fields?.cfoHz != null && (
+                            <div className="flex items-baseline gap-2 text-xs">
+                              <span className="text-muted-foreground">CFO</span>
+                              <span className="font-mono font-medium">{String(fields.cfoHz)} Hz</span>
                             </div>
                           )}
                           <div className="flex items-baseline gap-2 text-xs">
